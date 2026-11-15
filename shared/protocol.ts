@@ -347,6 +347,8 @@ export interface CharacterInfo {
   confirm: 'card' | 'quick'
   /** #rrggbb the HUD picks up while this character is selected, or null. */
   accent: string | null
+  /** The theme pack it wears (GET /api/themes has it), or null for the default look. Absent from a bridge older than themes. */
+  theme?: string | null
 }
 
 /** POST /api/character answers this: the same shape the voice routes give for "be X". */

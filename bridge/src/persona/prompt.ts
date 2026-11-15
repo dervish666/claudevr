@@ -21,6 +21,8 @@ export interface Character {
   confirm: 'card' | 'quick'
   heardAs: string[]
   accent: string | null
+  /** The theme pack it wears (a folder under <state dir>/themes); false for none; absent or null for the pack named after it, if there is one. */
+  theme?: string | false | null
 }
 
 /** The bridge's rules, after the character's own prompt. The character decides how to say it; these decide what it may say. */

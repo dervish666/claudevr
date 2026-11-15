@@ -6,7 +6,8 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import { computed, signal, type Signal } from '@preact/signals-core'
 import { BufferAttribute, CircleGeometry, Matrix4, Quaternion, Vector3, type BufferGeometry, type Group } from 'three'
 import type { Figure, LimitWindow, Usage } from '../../../shared/protocol.ts'
@@ -19,8 +20,9 @@ import { useBatch, useLines, type ShapeBuilder } from './linework.tsx'
 import { arcGeometry, arcsGeometry, ticksGeometry, useGeometry } from './shapes.tsx'
 import { settings } from './settings.ts'
 import { RADIUS, STREAM_HEIGHT_M } from './Stream.tsx'
+import { CoreFace, FaceLabel, coreFace, faceBox, ringsShown } from './themes/faces.tsx'
 import { fit } from './text.ts'
-import { C, DEG, FONTS, levelColour, rgba, shade } from './theme.ts'
+import { C, DEG, FONTS, T, X, characterAccent, corner, levelColour, plateOf, rgba, shade, weight } from './theme.ts'
 
 /** The Stream's centre, in the rig's frame (the eye at the origin, looking down -Z). */
 export { CORE_Y }
@@ -77,25 +79,29 @@ export const Rings = memo(function Rings({ accent = C.cyan }: { accent?: string 
   const batch = useBatch()
   useLayoutEffect(() => batch.setPivot(0, CORE_Y), [batch])
   const dim = accent === C.cyan ? C.cyanDim : shade(accent, 0.48)
+  // A theme with its own face at the talk button drops the decorative rings unless it keeps them.
+  const decor = ringsShown()
   useLines(
     'rings',
     b => {
-      b.m = placed(b, [0, CORE_Y, RING_Z - 0.03])
-      b.spin = OUTER_SPIN
-      // Decorative, further back for stereo depth: a full ring with ticks.
-      arc(b, { r: 0.66, width: 0.0035, from: 0, to: Math.PI * 2, colour: dim, glow: false })
-      b.add('line', ticksGeometry(0.645, 0.014, 0.0035, 72), dim)
-      b.add('line', ticksGeometry(0.64, 0.026, 0.005, 8), accent)
-      b.m = placed(b, [0, CORE_Y, RING_Z - 0.015])
-      b.spin = INNER_SPIN
-      for (let i = 0; i < 4; i++) arc(b, { r: 0.575, width: 0.004, from: deg(i * 90 + 12), to: deg(i * 90 + 62), colour: dim, glow: false })
+      if (decor) {
+        b.m = placed(b, [0, CORE_Y, RING_Z - 0.03])
+        b.spin = OUTER_SPIN
+        // Decorative, further back for stereo depth: a full ring with ticks.
+        arc(b, { r: 0.66, width: 0.0035, from: 0, to: Math.PI * 2, colour: dim, glow: false })
+        b.add('line', ticksGeometry(0.645, 0.014, 0.0035, 72), dim)
+        b.add('line', ticksGeometry(0.64, 0.026, 0.005, 8), accent)
+        b.m = placed(b, [0, CORE_Y, RING_Z - 0.015])
+        b.spin = INNER_SPIN
+        for (let i = 0; i < 4; i++) arc(b, { r: 0.575, width: 0.004, from: deg(i * 90 + 12), to: deg(i * 90 + 62), colour: dim, glow: false })
+      }
       // The two arcs of the Core proper, still.
       b.spin = 0
       b.m = placed(b, [0, CORE_Y, RING_Z])
       arc(b, { r: RING_R, width: 0.005, from: deg(36), to: deg(144), colour: accent })
       arc(b, { r: RING_R, width: 0.004, from: deg(206), to: deg(334), colour: dim, glow: false })
     },
-    [accent, dim],
+    [accent, dim, decor],
   )
   return null
 })
@@ -144,7 +150,7 @@ function Readout({ x, y, label, value, sub, colour, warn }: { x: number; y: numb
   const top = (TOP_CY + TOP_H / 2000 - y) * 1000 - 60
   return (
     <Container positionType="absolute" positionLeft={left} positionTop={top} width={220} height={120} alignItems="center" justifyContent="center">
-      <Container flexDirection="column" alignItems="center" paddingX={10} paddingY={4} borderRadius={6} backgroundColor={rgba(5, 8, 10, 0.9)}>
+      <Container flexDirection="column" alignItems="center" paddingX={10} paddingY={4} borderRadius={corner(6)} backgroundColor={plateOf('readout', 0.9)}>
         <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={20} color={C.muted}>
           {label}
         </Text>
@@ -235,6 +241,7 @@ export function sameVoice(a: Voice, b: Voice): boolean {
     a.character?.name === b.character?.name &&
     a.character?.accent === b.character?.accent &&
     a.character?.confirm === b.character?.confirm &&
+    a.character?.theme === b.character?.theme &&
     a.characters.map(c => `${c.name}:${c.accent}`).join('|') === b.characters.map(c => `${c.name}:${c.accent}`).join('|') &&
     a.characterPending?.name === b.characterPending?.name &&
     !a.characterPending === !b.characterPending &&
@@ -271,23 +278,19 @@ const rgb = (hex: string): [number, number, number] => {
   // Vertex colours are taken as linear; square the sRGB value as a close-enough decode.
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255].map(v => v * v) as [number, number, number]
 }
-const DIM = rgb(C.cyanFaint)
-const IDLE = rgb(C.cyanDim)
-const MIC = rgb('#ff7a7a')
-const MIC_HOT = rgb('#ffe1e1')
-const AMBER = rgb(C.amber)
-const GREEN = rgb(C.green)
-const RED = rgb(C.red)
+/** The arc's cell colours from the theme; read once when the arc is built, which a theme change does again. */
+const cellColours = () => ({ DIM: rgb(C.cyanFaint), IDLE: rgb(C.cyanDim), MIC: rgb(X.mic), MIC_HOT: rgb(X.micHot), AMBER: rgb(C.amber), GREEN: rgb(C.green), RED: rgb(C.red) })
 
 export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice; level: MutableRefObject<number> }) {
   const { geo, vertsPerCell } = useMemo(cellsGeometry, [])
   useEffect(() => () => geo.dispose(), [geo])
+  const { DIM, IDLE, MIC, MIC_HOT, AMBER, GREEN, RED } = useMemo(cellColours, [])
   const vRef = useRef(voice)
   vRef.current = voice
   const flash = useRef<{ colour: [number, number, number]; until: number } | null>(null)
   // The resting centre takes the character's accent, squared to linear like the rest.
-  const accent = voice.character?.accent ?? null
-  const idle = useMemo(() => (accent ? rgb(shade(accent, 0.48)) : IDLE), [accent])
+  const accent = voice.character ? characterAccent(voice.character) : null
+  const idle = useMemo(() => (accent && accent !== C.cyan ? rgb(shade(accent, 0.48)) : IDLE), [accent, IDLE])
   const idleRef = useRef(idle)
   idleRef.current = idle
   const lastCard = useRef<string | null>(null)
@@ -299,7 +302,7 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
     if (c?.state === 'sent') flash.current = { colour: GREEN, until: performance.now() + 900 }
     if (c?.state === 'refused' || c?.state === 'limited' || c?.state === 'unknown') flash.current = { colour: RED, until: performance.now() + 1500 }
     if (c?.state === 'cancelled') flash.current = { colour: IDLE, until: performance.now() + 400 }
-  }, [voice.card])
+  }, [voice.card, GREEN, RED, IDLE])
   useFrame(() => {
     const v = vRef.current
     const col = geo.getAttribute('color') as BufferAttribute
@@ -346,13 +349,17 @@ export interface IrisHandlers {
 }
 
 /** The iris: who is being addressed, and the hold-to-talk target (trigger or pinch while pointing at it). */
-export const Iris = memo(function Iris({ name, sub, colour, recording, level, handlers, irisRef }: { name: string; sub: string; colour: string; recording: boolean; level: MutableRefObject<number>; handlers: MutableRefObject<IrisHandlers>; irisRef: MutableRefObject<Group | null> }) {
+export const Iris = memo(function Iris({ name, sub, colour, recording, level, handlers, irisRef, voice }: { name: string; sub: string; colour: string; recording: boolean; level: MutableRefObject<number>; handlers: MutableRefObject<IrisHandlers>; irisRef: MutableRefObject<Group | null>; voice: MutableRefObject<Voice> }) {
+  // A theme's face (themes/faces.tsx) stands in for the iris; read once, since a theme change rebuilds this part.
+  const face = useMemo(coreFace, [])
+  const box = useMemo(() => (face ? faceBox(face.base === 'rings' ? null : face.base, face.image) : null), [face])
+  const iris = !face || face.base === 'rings'
   const blades = useRef<Group>(null)
   const bladeGeo = useGeometry(() => arcsGeometry(Array.from({ length: 12 }, (_, i) => ({ r: 0.074, width: 0.01, from: deg(i * 30 + 4), to: deg(i * 30 + 22) }))), [])
   useFrame((_, dt) => {
     const b = blades.current
     if (b) {
-      b.rotation.z += dt * (recording ? 1.4 : settings.current.rotation ? 0.25 : 0)
+      b.rotation.z += dt * (recording ? 1.4 : settings.current.rotation ? 0.25 * T.theme.motion.ringSpeed : 0)
       b.scale.setScalar(1 + (recording ? level.current * 0.12 : 0))
     }
   })
@@ -360,24 +367,28 @@ export const Iris = memo(function Iris({ name, sub, colour, recording, level, ha
   useLines(
     'iris',
     b => {
+      if (!iris) return
       b.m = placed(b, [0, IRIS_Y, RING_Z + 0.02])
       arc(b, { r: IRIS_R, width: 0.006, from: 0, to: Math.PI * 2, colour: ringColour })
       // The pupil: an opaque smoked disc behind the name.
       b.m = placed(b, [0, IRIS_Y, RING_Z + 0.018])
-      b.add('back', new CircleGeometry(0.068, 48), recording ? '#2a0a0e' : '#06090b', 0.95)
+      b.add('back', new CircleGeometry(0.068, 48), recording ? X.pupilRec : X.pupil, 0.95)
     },
-    [ringColour, recording],
+    [ringColour, recording, iris],
   )
   return (
     <group ref={irisRef} position={[0, IRIS_Y, RING_Z + 0.02]}>
-      <group ref={blades} position-z={0.001}>
-        <mesh geometry={bladeGeo}>
-          <meshBasicMaterial color={recording ? C.red : C.cyanDim} toneMapped={false} />
-        </mesh>
-      </group>
-      {/* The hit target, a little larger than the iris. Its material never draws; rays still find it. */}
+      {iris && (
+        <group ref={blades} position-z={0.001}>
+          <mesh geometry={bladeGeo}>
+            <meshBasicMaterial color={recording ? C.red : C.cyanDim} toneMapped={false} />
+          </mesh>
+        </group>
+      )}
+      {face && box && <CoreFace box={box} base={face.base === 'rings' ? null : face.base} image={face.image} colour={recording ? C.red : colour} recording={recording} level={level} voice={voice} />}
+      {/* The hit target, a little larger than the iris or the face. Its material never draws; rays still find it. */}
       <mesh
-        position-z={0.004}
+        position={[0, box?.hit.y ?? 0, 0.004]}
         onPointerDown={e => {
           e.stopPropagation()
           handlers.current.onDown()
@@ -387,10 +398,11 @@ export const Iris = memo(function Iris({ name, sub, colour, recording, level, ha
           handlers.current.onUp()
         }}
       >
-        <circleGeometry args={[IRIS_R + 0.02, 32]} />
+        {box ? <planeGeometry args={[box.hit.w, box.hit.h]} /> : <circleGeometry args={[IRIS_R + 0.02, 32]} />}
         <meshBasicMaterial visible={false} />
       </mesh>
-      <group position-z={0.003}>
+      {box && <FaceLabel name={name} sub={sub} colour={colour} recording={recording} at={box.label} />}
+      {!face && <group position-z={0.003}>
         <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" alignItems="center" width={130} pointerEvents="none">
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={16} color={C.muted}>
             {recording ? 'LISTENING' : 'TALK TO'}
@@ -402,7 +414,7 @@ export const Iris = memo(function Iris({ name, sub, colour, recording, level, ha
             {fit(sub, 'rajdhani-600')}
           </Text>
         </Container>
-      </group>
+      </group>}
     </group>
   )
 })
@@ -412,11 +424,11 @@ export const Iris = memo(function Iris({ name, sub, colour, recording, level, ha
 /** What was heard and what it meant, one or two lines between the Stream and the iris. */
 export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
   const { heard, reply, phase, sttProblem, ttsProblem, voiceOutError, muted, frontManProblem, lineWaiting, announced } = voice
-  const accent = voice.character?.accent ?? C.cyan
+  const accent = characterAccent(voice.character)
   const line = phase.kind === 'failed' && heard?.ok !== false ? { c: C.red, t: `${phase.title}: ${phase.detail}` } : phase.kind === 'idle' && phase.note ? { c: C.amber, t: phase.note } : null
   return (
     <group position={[0, CORE_Y - STREAM_HEIGHT_M / 2 - 0.075, -RADIUS + 0.01]}>
-      <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" alignItems="center" gap={4} width={820} paddingX={14} paddingY={6} borderRadius={6} backgroundColor={rgba(5, 8, 10, 0.9)}>
+      <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" alignItems="center" gap={4} width={820} paddingX={14} paddingY={6} borderRadius={corner(6)} backgroundColor={plateOf('readout', 0.9)}>
         {(sttProblem || ttsProblem) && (
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={18} color={voice.sttLoading ? C.amber : C.red} textAlign="center">
             {fit([sttProblem, ttsProblem].filter(Boolean).join('  ·  '))}
@@ -428,7 +440,7 @@ export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
           </Text>
         )}
         <Text fontFamily="inter" fontSize={19} color={heard === null ? C.muted : heard.ok ? C.white : C.red} textAlign="center">
-          {fit(heard === null ? 'Hold the grip, or point at the iris and hold the trigger, and speak.' : heard.ok ? `Heard: "${clip(heard.text, 120)}"` : `${heard.title}: no transcript. ${clip(heard.detail, 90)}`)}
+          {fit(heard === null ? (T.theme.text.greeting ?? 'Hold the grip, or point at the iris and hold the trigger, and speak.') : heard.ok ? `Heard: "${clip(heard.text, 120)}"` : `${heard.title}: no transcript. ${clip(heard.detail, 90)}`)}
         </Text>
         {line && (
           <Text fontFamily="inter" fontSize={17} color={line.c} textAlign="center">
@@ -455,6 +467,12 @@ export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
             {fit(`Voice out failed: ${clip(voiceOutError, 80)}`)}
           </Text>
         )}
+        {/* Why the character's theme pack is not on (or not all of it): set only when a theme is applied, which rebuilds this root. */}
+        {T.note && (
+          <Text fontFamily="inter" fontSize={14} color={C.amber} textAlign="center">
+            {fit(clip(T.note, 140))}
+          </Text>
+        )}
       </Container>
     </group>
   )
@@ -465,7 +483,7 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 function Button({ label, colour, onClick, width = 210 }: { label: string; colour: string; onClick: () => void; width?: number }) {
   return (
     // flexShrink 0: a long state word or detail beside it squeezes the text, never the button.
-    <Container width={width} height={64} flexShrink={0} borderRadius={8} borderWidth={3} borderColor={colour} backgroundColor={rgba(8, 12, 15, 0.95)} hover={{ backgroundColor: rgba(30, 45, 55, 0.98) }} justifyContent="center" alignItems="center" onClick={e => (e.stopPropagation(), onClick())}>
+    <Container width={width} height={64} flexShrink={0} borderRadius={corner(8)} borderWidth={weight(3)} borderColor={colour} backgroundColor={plateOf('button', 0.95)} hover={{ backgroundColor: plateOf('buttonHover', 0.98) }} justifyContent="center" alignItems="center" onClick={e => (e.stopPropagation(), onClick())}>
       <Text fontFamily="rajdhani" fontWeight="bold" fontSize={26} color={colour}>
         {label}
       </Text>
@@ -503,7 +521,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   if (!card && which) {
     return (
       <group position={[0, CORE_Y - 0.1, z]}>
-        <Container key={`which:${which.expiresAt}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={C.purple} backgroundColor={rgba(10, 8, 16, 0.96)}>
+        <Container key={`which:${which.expiresAt}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={corner(10)} borderWidth={weight(3)} borderColor={C.purple} backgroundColor={plateOf('which', 0.96)}>
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={24} color={C.purple}>
             {fit(which.say)}
           </Text>
@@ -532,8 +550,8 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
     // the whole message fits here (QUICK_MAX_CHARS), so the text is never cut.
     return (
       <group position={[0, CORE_Y - 0.17, z]}>
-        <Container key={`quick:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="row" alignItems="center" gap={12} width={760} paddingX={14} paddingY={8} borderRadius={8} borderWidth={2} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
-          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={voice.character?.accent ?? C.cyan}>
+        <Container key={`quick:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="row" alignItems="center" gap={12} width={760} paddingX={14} paddingY={8} borderRadius={corner(8)} borderWidth={weight(2)} borderColor={border} backgroundColor={plateOf('card', 0.96)}>
+          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={characterAccent(voice.character)}>
             {fit(`TO ${c.callsign.toUpperCase()}`, 'rajdhani-700')}
           </Text>
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={19} color={C.white} flexShrink={1} flexGrow={1}>
@@ -560,7 +578,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   }
   return (
     <group position={[0, CORE_Y - 0.1, z]}>
-      <Container key={`card:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
+      <Container key={`card:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={corner(10)} borderWidth={weight(3)} borderColor={border} backgroundColor={plateOf('card', 0.96)}>
         <Container flexDirection="row" alignItems="center" gap={12}>
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={24} color={C.muted}>
             TO
@@ -573,7 +591,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
           </Text>
         </Container>
         {/* The whole message, never cut: past eight lines it scrolls inside the card (drag it with the ray). */}
-        <Container backgroundColor={rgba(255, 255, 255, 0.06)} borderRadius={6} padding={12} flexDirection="column" maxHeight={CARD_TEXT_MAX_H} overflow="scroll" scrollbarColor={C.cyanDim} scrollbarWidth={6}>
+        <Container backgroundColor={rgba(255, 255, 255, 0.06)} borderRadius={corner(6)} padding={12} flexDirection="column" maxHeight={CARD_TEXT_MAX_H} overflow="scroll" scrollbarColor={C.cyanDim} scrollbarWidth={6}>
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={26} lineHeight={1.35} color={C.white} flexShrink={0}>
             {fit(c.text)}
           </Text>
@@ -607,9 +625,9 @@ export const Alarm = memo(function Alarm({ lines, above }: { lines: string[]; ab
   if (!lines.length) return null
   return (
     <group position={[0, above ? 0.86 : CORE_Y + RING_R + 0.09, above ? -1.26 : RING_Z + 0.01]} rotation-x={above ? Math.atan2(0.86, 1.26) : 0}>
-      <Container pixelSize={MM} fontFamilies={FONTS} anchorY={above ? 'bottom' : 'center'} flexDirection="column" gap={4} width={900} padding={12} borderRadius={8} borderWidth={3} borderColor={C.red} backgroundColor={rgba(40, 6, 6, 0.95)}>
+      <Container pixelSize={MM} fontFamilies={FONTS} anchorY={above ? 'bottom' : 'center'} flexDirection="column" gap={4} width={900} padding={12} borderRadius={corner(8)} borderWidth={weight(3)} borderColor={C.red} backgroundColor={plateOf('alarm', 0.95)}>
         {lines.map(l => (
-          <Text key={l} fontFamily="inter" fontWeight="semi-bold" fontSize={20} color="#ffe1e1">
+          <Text key={l} fontFamily="inter" fontWeight="semi-bold" fontSize={20} color={X.alarmText}>
             {fit(l)}
           </Text>
         ))}

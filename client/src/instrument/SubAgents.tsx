@@ -8,16 +8,17 @@
 // extra draw calls of their own; their frames go into the shared line batch.
 
 import { memo, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import type { AgentInfo, AgentState, Session } from '../../../shared/protocol.ts'
 import { shownAgents } from '../../../shared/agents.ts'
 import { placed } from './Core.tsx'
 import { CORE_Y, LANE_GAP, SUB_GAP, SUB_H, SUB_MORE_H, SUB_W, TILE_H, TILE_W, planSubBoxes, slotPose } from './layout.ts'
 import { useLines } from './linework.tsx'
-import { bracketRects, rectsGeometry } from './shapes.tsx'
+import { addFrame } from './shapes.tsx'
 import { MESH_WIDTH_M, RADIUS, STREAM_HEIGHT_M } from './Stream.tsx'
 import { fit } from './text.ts'
-import { C, FONTS, rgba } from './theme.ts'
+import { C, FONTS, corner, plateOf } from './theme.ts'
 
 const MM = 0.001
 export const SUB_W_PX = SUB_W * 1000
@@ -92,9 +93,9 @@ const SubBox = memo(function SubBox({ v, top, left, plate, onPick }: { v: SubVie
       flexDirection="column"
       paddingX={8}
       paddingY={5}
-      borderRadius={3}
-      backgroundColor={v.selected ? rgba(18, 34, 42, plate) : rgba(10, 14, 17, v.dim ? plate * 0.7 : plate)}
-      hover={{ backgroundColor: rgba(24, 44, 54, Math.max(plate, 0.92)) }}
+      borderRadius={corner(3)}
+      backgroundColor={v.selected ? plateOf('tileSel', plate) : plateOf('tile', v.dim ? plate * 0.7 : plate)}
+      hover={{ backgroundColor: plateOf('hover', Math.max(plate, 0.92)) }}
       onClick={e => {
         e.stopPropagation()
         onPick.current(v.sessionId, v.id)
@@ -133,9 +134,9 @@ function MoreBox({ n, top, left, height, sessionId, onPick }: { n: number; top: 
       height={height}
       justifyContent="center"
       alignItems="center"
-      borderRadius={3}
-      backgroundColor={rgba(10, 14, 17, 0.8)}
-      hover={{ backgroundColor: rgba(24, 44, 54, 0.92) }}
+      borderRadius={corner(3)}
+      backgroundColor={plateOf('tile', 0.8)}
+      hover={{ backgroundColor: plateOf('hover', 0.92) }}
       onClick={e => {
         e.stopPropagation()
         onPick.current(sessionId, null)
@@ -183,7 +184,7 @@ export const LaneLines = memo(
         frameRects(
           (x, y, w, h, colour, alpha, thick) => {
             b.m = tile.clone().multiply(placed(b, [x, y, 0.002]))
-            b.add('line', rectsGeometry(bracketRects(w, h, Math.min(0.02, h / 2), thick)), colour, alpha)
+            addFrame(b, w, h, Math.min(0.02, h / 2), thick, colour, alpha, false)
           },
           lane,
           cx,
@@ -217,7 +218,7 @@ export const DispatcherAgents = memo(
           const v = lane.boxes[i]
           const x = STRIP_LEFT + SUB_W / 2 + i * (SUB_W + STRIP_GAP_PX * MM)
           b.m = placed(b, [x, STRIP_BOTTOM + SUB_H / 2, STRIP_Z + 0.002])
-          b.add('line', rectsGeometry(bracketRects(SUB_W, SUB_H, 0.02, v?.selected ? 0.003 : 0.002)), more ? C.muted : v!.selected ? C.white : stateTint(v!.state), more ? 0.6 : v!.dim ? 0.45 : 1)
+          addFrame(b, SUB_W, SUB_H, 0.02, v?.selected ? 0.003 : 0.002, more ? C.muted : v!.selected ? C.white : stateTint(v!.state), more ? 0.6 : v!.dim ? 0.45 : 1, false)
         }
       },
       [JSON.stringify(lane)],

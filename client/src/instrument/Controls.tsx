@@ -4,10 +4,11 @@
 // that keeps only the way back and the way out.
 
 import { memo } from 'react'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import type { Signal } from '@preact/signals-core'
 import { setSetting, useSettings, type Settings } from './settings.ts'
-import { C, DEG, FONTS, rgba } from './theme.ts'
+import { C, DEG, FONTS, corner, plateOf, weight } from './theme.ts'
 import { log } from './telemetry.ts'
 
 const MM = 0.001
@@ -19,10 +20,10 @@ function Option<K extends keyof Settings>({ k, value, label }: { k: K; value: Se
     <Container
       flexGrow={1}
       height={58}
-      borderRadius={8}
-      borderWidth={3}
+      borderRadius={corner(8)}
+      borderWidth={weight(3)}
       borderColor={on ? C.cyan : C.cyanFaint}
-      backgroundColor={on ? rgba(20, 70, 90, 0.96) : rgba(8, 12, 15, 0.95)}
+      backgroundColor={on ? plateOf('toggleOn', 0.96) : plateOf('button', 0.95)}
       hover={{ borderColor: C.white }}
       justifyContent="center"
       alignItems="center"
@@ -56,11 +57,11 @@ function Action({ label, colour, onClick }: { label: string; colour: string; onC
     <Container
       flexGrow={1}
       height={58}
-      borderRadius={8}
-      borderWidth={3}
+      borderRadius={corner(8)}
+      borderWidth={weight(3)}
       borderColor={colour}
-      backgroundColor={rgba(8, 12, 15, 0.95)}
-      hover={{ backgroundColor: rgba(30, 45, 55, 0.98) }}
+      backgroundColor={plateOf('button', 0.95)}
+      hover={{ backgroundColor: plateOf('buttonHover', 0.98) }}
       justifyContent="center"
       alignItems="center"
       onClick={e => {
@@ -99,7 +100,7 @@ export const Controls = memo(function Controls({ streamNote, perf, mic, preview,
   if (minimised) {
     return (
       <group position={[0.5, -0.5, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
-        <Container key="folded" pixelSize={MM} fontFamilies={FONTS} flexDirection="row" gap={8} width={330} padding={10} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
+        <Container key="folded" pixelSize={MM} fontFamilies={FONTS} flexDirection="row" gap={8} width={330} padding={10} borderRadius={corner(10)} borderWidth={weight(2)} borderColor={C.cyanDim} backgroundColor={plateOf('card', 0.94)}>
           <Action label="SETTINGS" colour={C.cyan} onClick={() => fold(false)} />
           <Action label={preview ? 'BACK TO 2D' : 'EXIT'} colour={C.red} onClick={onExit} />
         </Container>
@@ -109,7 +110,7 @@ export const Controls = memo(function Controls({ streamNote, perf, mic, preview,
   // y is low enough to clear the bottom tile row's age line on the right wing.
   return (
     <group position={[0.5, -0.66, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
-      <Container key="open" pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={8} width={560} padding={16} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
+      <Container key="open" pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={8} width={560} padding={16} borderRadius={corner(10)} borderWidth={weight(2)} borderColor={C.cyanDim} backgroundColor={plateOf('card', 0.94)}>
         <Container flexDirection="row" alignItems="center" gap={10}>
           <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={C.cyan}>
             SETTINGS
@@ -120,10 +121,10 @@ export const Controls = memo(function Controls({ streamNote, perf, mic, preview,
           <Container
             height={40}
             paddingX={14}
-            borderRadius={8}
-            borderWidth={3}
+            borderRadius={corner(8)}
+            borderWidth={weight(3)}
             borderColor={C.cyanFaint}
-            backgroundColor={rgba(8, 12, 15, 0.95)}
+            backgroundColor={plateOf('button', 0.95)}
             hover={{ borderColor: C.white }}
             justifyContent="center"
             alignItems="center"

@@ -4,11 +4,12 @@
 // the bridge (the label says so), and a refusal shows as a line under the row.
 
 import { memo } from 'react'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import type { Voice } from '../hud/voice/useVoice.ts'
 import { IRIS_R, IRIS_Y, RING_Z } from './Core.tsx'
 import { fit } from './text.ts'
-import { C, FONTS, rgba, shade } from './theme.ts'
+import { C, FONTS, corner, plateOf, shade, weight } from './theme.ts'
 import { log } from './telemetry.ts'
 
 const MM = 0.001
@@ -43,10 +44,10 @@ export const CharacterButtons = memo(function CharacterButtons({ voice }: { voic
                 flexGrow={1}
                 flexBasis={0}
                 height={52}
-                borderRadius={8}
-                borderWidth={3}
+                borderRadius={corner(8)}
+                borderWidth={weight(3)}
                 borderColor={on || pending ? b.accent : C.cyanFaint}
-                backgroundColor={on ? shade(b.accent, 0.72) : rgba(8, 12, 15, 0.95)}
+                backgroundColor={on ? shade(b.accent, 0.72) : plateOf('button', 0.95)}
                 hover={{ borderColor: C.white }}
                 justifyContent="center"
                 alignItems="center"
@@ -63,7 +64,7 @@ export const CharacterButtons = memo(function CharacterButtons({ voice }: { voic
           })}
         </Container>
         {characterError && (
-          <Container paddingX={10} paddingY={4} borderRadius={6} backgroundColor={rgba(40, 8, 8, 0.92)} maxWidth={ROW_W}>
+          <Container paddingX={10} paddingY={4} borderRadius={corner(6)} backgroundColor={plateOf('error', 0.92)} maxWidth={ROW_W}>
             <Text fontFamily="inter" fontSize={15} color={C.red}>
               {fit(characterError.length > 110 ? `${characterError.slice(0, 108)}…` : characterError)}
             </Text>

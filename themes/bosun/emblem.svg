@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- The Bosun's emblem: a ship's wheel in brass, drawn for this repo. The source of emblem.png. -->
+  <g fill="none" stroke-linecap="round">
+    <g stroke="#7a5a22" stroke-width="7">
+      <line x1="64" y1="8" x2="64" y2="120"/>
+      <line x1="8" y1="64" x2="120" y2="64"/>
+      <line x1="24.4" y1="24.4" x2="103.6" y2="103.6"/>
+      <line x1="103.6" y1="24.4" x2="24.4" y2="103.6"/>
+    </g>
+    <g stroke="#e2b552" stroke-width="4">
+      <line x1="64" y1="8" x2="64" y2="120"/>
+      <line x1="8" y1="64" x2="120" y2="64"/>
+      <line x1="24.4" y1="24.4" x2="103.6" y2="103.6"/>
+      <line x1="103.6" y1="24.4" x2="24.4" y2="103.6"/>
+    </g>
+    <circle cx="64" cy="64" r="40" stroke="#7a5a22" stroke-width="11"/>
+    <circle cx="64" cy="64" r="40" stroke="#d4a443" stroke-width="7"/>
+    <circle cx="64" cy="64" r="40" stroke="#f3d68a" stroke-width="1.5" stroke-dasharray="3 5"/>
+  </g>
+  <g fill="#d4a443" stroke="#7a5a22" stroke-width="2">
+    <circle cx="64" cy="8" r="6"/>
+    <circle cx="64" cy="120" r="6"/>
+    <circle cx="8" cy="64" r="6"/>
+    <circle cx="120" cy="64" r="6"/>
+    <circle cx="24.4" cy="24.4" r="6"/>
+    <circle cx="103.6" cy="103.6" r="6"/>
+    <circle cx="103.6" cy="24.4" r="6"/>
+    <circle cx="24.4" cy="103.6" r="6"/>
+    <circle cx="64" cy="64" r="14"/>
+  </g>
+  <circle cx="64" cy="64" r="5" fill="#0d1b2b"/>
+</svg>

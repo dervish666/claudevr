@@ -2,7 +2,8 @@
 // entry; the 2D page imports it in the background (hud/InstrumentEntry.tsx)
 // and mounts <Instrument mode="xr"> once it arrives, so an Enter press can
 // request the session inside the press. The scene itself mounts only while
-// a session runs, or in the desktop preview at /?instrument=preview.
+// a session runs, or in the desktop preview at /?instrument=preview
+// (add &theme=<name> to force a theme pack there).
 
 import { memo, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
@@ -15,14 +16,17 @@ import { IN_INSTRUMENT_KEY } from '../hud/InstrumentEntry.tsx'
 import { unlockAudio } from '../hud/voice/audio-context.ts'
 import { voiceTap, type Voice } from '../hud/voice/useVoice.ts'
 import { Controls } from './Controls.tsx'
-import { Alarm, CardView, CORE_Y, HeardLine, Iris, Rings, TopArc, VoiceArc, sameVoice } from './Core.tsx'
+import { Alarm, CardView, CORE_Y, HeardLine, Iris, RING_R, RING_Z, Rings, TopArc, VoiceArc, sameVoice } from './Core.tsx'
 import { leakProbe } from './leakprobe.ts'
 import { settings, setSetting, useSettings } from './settings.ts'
 import { audioListener, blips, chime, routeFrom } from './sound.ts'
 import { FRAMEBUFFER_SCALE, countTextures, glTextures, store } from './store.ts'
-import { RADIUS, StreamLayer, StreamMesh, streamScroll, useTranscript, type Target } from './Stream.tsx'
+import { MESH_WIDTH_M, RADIUS, STREAM_HEIGHT_M, StreamLayer, StreamMesh, streamScroll, useTranscript, type Target } from './Stream.tsx'
 import { countRender, flush, frameStats, frameTick, log, resetFrames, startTelemetry, takeRenders } from './telemetry.ts'
-import { C, STATE_WORDS, stateColour } from './theme.ts'
+import { STATE_WORDS, characterAccent, stateColour } from './theme.ts'
+import { Badge, StreamFrame, TopSweep } from './themes/faces.tsx'
+import { ThemePart } from './themes/parts.tsx'
+import { ThemeDriver } from './themes/runtime.tsx'
 import { Tether, Tiles, itemId, slotPose, useTiles } from './Tiles.tsx'
 import { Rail, ReplyCards, useReplies } from './Cards.tsx'
 import { LineBatch, LineWork } from './linework.tsx'
@@ -35,6 +39,8 @@ const STATS_MS = 5000
 /** Thumbstick scroll speed, design px per second at full deflection. */
 const SCROLL_PX_S = 700
 const LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+/** The preview's forced theme pack (?instrument=preview&theme=<name>), or null for the character's own. */
+const PREVIEW_THEME = new URLSearchParams(location.search).get('theme')
 
 let pressedAt: number | null = null
 
@@ -343,7 +349,10 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   const irisName = target.kind === 'dispatcher' ? (character ? character.name.toUpperCase() : 'DISPATCHER') : target.session.callsign.toUpperCase()
   const irisSub = target.kind === 'dispatcher' ? (dispatcher ? STATE_WORDS[dispatcher.state] : 'NOT IN FLEET') : STATE_WORDS[target.session.state]
   // A character's accent replaces cyan where the scene speaks for the bridge itself: the Core's rings and the dispatcher's iris.
-  const accent = voice.character?.accent ?? C.cyan
+  // A theme pack's own accent comes first (theme.ts).
+  const accent = characterAccent(voice.character)
+  // The theme follows the character (the bridge resolves which pack); the preview can force one.
+  const wantTheme = (preview && PREVIEW_THEME) || character?.theme || null
   const irisColour = target.kind === 'dispatcher' ? accent : stateColour(target.session.state)
 
   // A selection whose session left the fleet falls back to the dispatcher.
@@ -588,44 +597,71 @@ function Scene(p: GateProps & { session: XRSession | null }) {
             <meshBasicMaterial color="#000" side={BackSide} transparent opacity={s.dimmer} depthWrite={false} toneMapped={false} />
           </mesh>
         )}
-        <Rings accent={accent} />
+        <ThemeDriver token={p.token} want={wantTheme} />
+        <ThemePart part="core">
+          <Rings accent={accent} />
+        </ThemePart>
         <group name="top-arc">
-          <TopArc usage={fleet?.usage} />
+          <ThemePart part="core">
+            <TopArc usage={fleet?.usage} />
+            <TopSweep r={RING_R} z={RING_Z + 0.003} />
+            <Badge y={CORE_Y + 0.535} z={RING_Z + 0.01} />
+          </ThemePart>
         </group>
-        <group name="stream">{useLayer ? <StreamLayer y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} /> : <StreamMesh y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} />}</group>
+        <group name="stream">
+          <ThemePart part="stream">
+            <StreamFrame w={MESH_WIDTH_M} h={STREAM_HEIGHT_M} z={-RADIUS + 0.002} />
+          </ThemePart>
+          {useLayer ? <StreamLayer y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} /> : <StreamMesh y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} />}
+        </group>
         <group name="dispatcher-agents">
-          <DispatcherStrip session={dispatcher} selectedAgent={agentSel?.agentId ?? null} plate={s.plate} onPick={pickAgentRef} />
+          <ThemePart part="rail">
+            <DispatcherStrip session={dispatcher} selectedAgent={agentSel?.agentId ?? null} plate={s.plate} onPick={pickAgentRef} />
+          </ThemePart>
         </group>
         <group name="characters">
-          <CharacterButtons voice={voice} />
+          <ThemePart part="rail">
+            <CharacterButtons voice={voice} />
+          </ThemePart>
         </group>
-        <group name="voice-arc">
-          <VoiceArc voice={voice} level={level} />
-        </group>
-        <group name="iris">
-          <Iris name={irisName} sub={irisSub} colour={irisColour} recording={voice.phase.kind === 'recording'} level={level} irisRef={irisRef} handlers={irisHandlers} />
-        </group>
-        <group name="heard">
-          <HeardLine voice={voice} />
-        </group>
-        <group name="send-card">
-          <CardView voice={voice} voiceRef={voiceRef} fleetIds={fleetIds} />
-        </group>
-        <group name="alarm">
-          <Alarm lines={alarms} above={!!fleet?.needs.length} />
-        </group>
+        <ThemePart part="core">
+          <group name="voice-arc">
+            <VoiceArc voice={voice} level={level} />
+          </group>
+          <group name="iris">
+            <Iris name={irisName} sub={irisSub} colour={irisColour} recording={voice.phase.kind === 'recording'} level={level} irisRef={irisRef} handlers={irisHandlers} voice={voiceRef} />
+          </group>
+          <group name="heard">
+            <HeardLine voice={voice} />
+          </group>
+          <group name="send-card">
+            <CardView voice={voice} voiceRef={voiceRef} fleetIds={fleetIds} />
+          </group>
+          <group name="alarm">
+            <Alarm lines={alarms} above={!!fleet?.needs.length} />
+          </group>
+        </ThemePart>
         <group name="tiles">
+          {/* Each wing keys itself by its side's part (Tiles.tsx). */}
           <Tiles items={items} selected={sel} selectedAgent={agentSel?.agentId ?? null} pulse={pulse} lit={lit} tileRefs={tileRefs} onPick={id => pickRef.current(id)} onPickAgent={pickAgent} />
-          <Tether slot={selectedSlot} />
+          <ThemePart part="rail">
+            <Tether slot={selectedSlot} />
+          </ThemePart>
         </group>
         <group name="rail">
-          <Rail needs={fleet?.needs ?? []} selected={targetId} onPick={openSession} />
+          <ThemePart part="rail">
+            <Rail needs={fleet?.needs ?? []} selected={targetId} onPick={openSession} />
+          </ThemePart>
         </group>
         <group name="replies">
-          <ReplyCards cards={replies.shown} slots={tileSlots} hasMore={hasMore} onPick={openSession} />
+          <ThemePart part="right">
+            <ReplyCards cards={replies.shown} slots={tileSlots} hasMore={hasMore} onPick={openSession} />
+          </ThemePart>
         </group>
         <group name="controls">
-          <Controls streamNote={streamNote} perf={perf} mic={mic} preview={preview} onRecenter={recenter} onFakeNeed={fakeNeed} onExit={exit} />
+          <ThemePart part="controls">
+            <Controls streamNote={streamNote} perf={perf} mic={mic} preview={preview} onRecenter={recenter} onFakeNeed={fakeNeed} onExit={exit} />
+          </ThemePart>
         </group>
       </LineWork>
       {preview && <PreviewCamera />}

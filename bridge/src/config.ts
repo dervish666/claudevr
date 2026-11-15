@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { CallsignOverride } from './backend/callsign.ts'
 import type { Character } from './persona/prompt.ts'
+import { PACK_NAME } from '../../shared/theme.ts'
 
 export const REPO_ROOT = resolve(import.meta.dirname, '..', '..')
 
@@ -89,6 +90,8 @@ export interface Config {
    */
   autoPair: boolean
   stateDir: string
+  /** Theme packs, one folder each: <stateDir>/themes unless CLAUDEVR_THEMES_DIR names another (the repo's themes/ for a demo). */
+  themesDir: string
   clientDir: string
   fixturesDir: string
   /** The fake backend's fleet: a file name inside fixturesDir. */
@@ -208,9 +211,11 @@ export function parseFish(f: Record<string, unknown>, env: Env, stateDir: string
 const NAME = /^[a-z][a-z ]{0,30}$/
 
 /**
- * "characters": { "bosun": { "voice": "atlas", "prompt": "...", "confirm": "quick", "heardAs": ["boatswain"], "accent": "#f5a524" } }
+ * "characters": { "bosun": { "voice": "atlas", "prompt": "...", "confirm": "quick", "heardAs": ["boatswain"], "accent": "#f5a524", "theme": "bosun" } }
  * With the fish provider, `voice` must be one of tts.fish.voices; with any
- * other the character speaks in that provider's one voice.
+ * other the character speaks in that provider's one voice. `theme` names a
+ * pack under <state dir>/themes (false: none); without it the pack named
+ * after the character is used when there is one.
  */
 export function parseCharacters(v: unknown, fishVoices: readonly string[] | null): Character[] {
   if (v === undefined) return []
@@ -227,7 +232,9 @@ export function parseCharacters(v: unknown, fishVoices: readonly string[] | null
     const confirm = oneOf(o.confirm, ['card', 'quick'] as const, 'card', `characters.${name}.confirm`)
     const accent = o.accent === undefined || o.accent === null ? null : typeof o.accent === 'string' && /^#[0-9a-f]{6}$/i.test(o.accent) ? o.accent.toLowerCase() : null
     if (o.accent !== undefined && o.accent !== null && accent === null) throw new Error(`characters.${name}.accent: a colour as #rrggbb, got ${JSON.stringify(o.accent)}`)
-    return { name, voice, prompt, confirm, heardAs: list(o.heardAs), accent }
+    const theme = o.theme === undefined || o.theme === null ? null : o.theme === false ? false : typeof o.theme === 'string' && PACK_NAME.test(o.theme) ? o.theme : undefined
+    if (theme === undefined) throw new Error(`characters.${name}.theme: a theme pack's folder name (lowercase letters, digits and hyphens), or false for none, got ${JSON.stringify(o.theme)}`)
+    return { name, voice, prompt, confirm, heardAs: list(o.heardAs), accent, theme }
   })
 }
 
@@ -314,6 +321,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     allowIps: env.CLAUDEVR_ALLOW_IPS !== undefined ? list(env.CLAUDEVR_ALLOW_IPS) : list(file.allowIps),
     autoPair: bool(env.CLAUDEVR_AUTO_PAIR ?? file.autoPair, false, 'autoPair'),
     stateDir,
+    themesDir: env.CLAUDEVR_THEMES_DIR ? absolute(env.CLAUDEVR_THEMES_DIR, REPO_ROOT) : join(stateDir, 'themes'),
     clientDir: absolute(env.CLAUDEVR_CLIENT_DIR ?? 'client/dist', REPO_ROOT),
     fixturesDir: absolute(env.CLAUDEVR_FIXTURES ?? 'fixtures', REPO_ROOT),
     fakeFleet: fixtureName(env.CLAUDEVR_FAKE_FLEET ?? 'demo-fleet.json'),

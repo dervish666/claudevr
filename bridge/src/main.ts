@@ -13,6 +13,7 @@ import { HelperStt, NoStt, type SttProvider } from './voice/stt.ts'
 import { FishTts, NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
 import { CliFrontMan, NoFrontMan, type FrontMan } from './persona/frontman.ts'
 import { Persona } from './persona/persona.ts'
+import { ThemeStore } from './themes.ts'
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a)
 
@@ -75,6 +76,19 @@ function main(): void {
     tts = fishTts
   }
 
+  // Theme packs, private like the characters: <state dir>/themes/<name>/ (or CLAUDEVR_THEMES_DIR).
+  const themes = new ThemeStore({ dir: cfg.themesDir, log })
+  void themes.list().then(
+    l => {
+      log(`themes: ${l.themes.length ? l.themes.map(t => t.name).join(', ') : 'none'} in ${themes.dir}${l.invalid.length ? `; not usable: ${l.invalid.map(i => i.name).join(', ')}` : ''}`)
+      for (const c of cfg.characters) {
+        const want = themes.resolve(c)
+        if (want && !l.themes.some(t => t.name === want)) log(`themes: character ${c.name} wears ${want}, which is not a usable pack; the HUD shows the default look and says why`)
+      }
+    },
+    (err: unknown) => log('themes: cannot read', themes.dir, (err as Error).message),
+  )
+
   // Character mode, only when characters are configured. The choice made by
   // voice is kept in <state>/character (empty for operator mode) and wins
   // over the config's `character` on the next start.
@@ -103,6 +117,7 @@ function main(): void {
       lineTimeoutMs: fm.lineTimeoutMs,
       classifyTimeoutMs: fm.classifyTimeoutMs,
       announceGapMs: fm.announceGapMs,
+      themeOf: c => themes.resolve(c),
       log: (...a) => log('[persona]', ...a),
     })
     log(`[persona] characters: ${cfg.characters.map(c => c.name).join(', ')}; ${persona.current() ? `character: ${persona.current()!.name}` : 'operator mode'}; front man: ${fm.provider === 'cli' ? `${fm.bin} (${fm.model})` : 'off'}`)
@@ -130,6 +145,7 @@ function main(): void {
     callsigns: cfg.callsigns,
     devReload: cfg.dev,
     persona,
+    themes,
   })
 
   bridge.server.on('error', err => {

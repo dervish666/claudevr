@@ -9,7 +9,8 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree, type RootState } from '@react-three/fiber'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Image, Text } from './ui.tsx'
 import { XRLayer, useXRSessionFeatureEnabled } from '@react-three/xr'
 import { signal } from '@preact/signals-core'
 import { OrthographicCamera, SRGBColorSpace, type WebGLRenderTarget } from 'three'
@@ -20,7 +21,8 @@ import { second } from './clock.ts'
 import { useStreamItems } from '../hud/conversation.ts'
 import { useTranscriptPoll } from '../hud/transcript.ts'
 import { blocks, fit, type Block } from './text.ts'
-import { C, DEG, FONTS, STATE_WORDS, shade, stateColour, rgba } from './theme.ts'
+import { C, DEG, FONTS, STATE_WORDS, T, X, characterAccent, corner, plateOf, rgba, shade, stateColour } from './theme.ts'
+import { ThemePart } from './themes/parts.tsx'
 import { countRender, log } from './telemetry.ts'
 
 export const STREAM_W = 907
@@ -61,7 +63,7 @@ export function useTranscript(token: string, target: Target): StreamData {
 /** Scroll requests from the thumbsticks, in design px; the Stream applies them on its next frame. */
 export const streamScroll = { pending: 0 }
 
-const plateColour = (opacity: number) => rgba(14, 18, 22, opacity)
+const plateColour = (opacity: number) => plateOf('stream', opacity)
 
 interface ContentProps {
   target: Target
@@ -86,7 +88,13 @@ export const StreamContent = memo(function StreamContent(p: ContentProps) {
   return <Turns key="turns" {...p} />
 })
 
-const AGENT_TINT = { running: C.cyan, done: C.green, failed: C.red, unknown: C.muted } as const
+// Getters: the theme's colours when the detail is built, not the ones loaded with the module.
+const AGENT_TINT = {
+  get running() { return C.cyan },
+  get done() { return C.green },
+  get failed() { return C.red },
+  get unknown() { return C.muted },
+}
 
 /**
  * A sub-agent, read-only: what it is, its state and how long it has run,
@@ -102,7 +110,8 @@ function AgentDetail({ agent: a, owner, plate, sizeX, sizeY, pixelSize }: { agen
     return t ? `${a.endedAt ? 'RAN' : 'RUNNING FOR'} ${t.toUpperCase()}` : 'START TIME UNKNOWN'
   }), [a])
   return (
-    <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={6} overflow="hidden">
+    <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={corner(6)} overflow="hidden">
+      <PanelTexture />
       <Container flexDirection="row" alignItems="center" gap={16} paddingX={28} height={54} flexShrink={0} borderBottomWidth={2} borderColor={C.cyanDim}>
         <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={C.cyan} flexShrink={0}>
           {fit(`SUB-AGENT OF ${owner}`, 'rajdhani-700')}
@@ -164,7 +173,7 @@ function Turns({ target, data, plate, sizeX, sizeY, pixelSize, character, conver
   const asCharacter = target.kind === 'dispatcher' && character !== null
   const who = asCharacter ? character.name.toUpperCase() : target.kind === 'dispatcher' ? 'DISPATCHER' : target.session.callsign.toUpperCase()
   const sessionWho = target.kind === 'dispatcher' ? 'DISPATCHER' : who
-  const accent = (asCharacter && character.accent) || C.cyan
+  const accent = asCharacter ? characterAccent(character) : C.cyan
   const session = target.session
   const turns: Turn[] = data.turns ?? session?.messages.map(m => ({ role: 'session' as const, text: m.text, clipped: false })) ?? []
   const items = useStreamItems(turns, conversation, character, asCharacter)
@@ -199,7 +208,8 @@ function Turns({ target, data, plate, sizeX, sizeY, pixelSize, character, conver
   })
 
   return (
-    <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={6} overflow="hidden" opacity={opacity}>
+    <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={corner(6)} overflow="hidden" opacity={opacity}>
+      <PanelTexture />
       <Container flexDirection="row" alignItems="center" gap={16} paddingX={28} height={54} flexShrink={0} borderBottomWidth={2} borderColor={C.cyanDim}>
         <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={accent}>
           {fit(who, 'rajdhani-700')}
@@ -266,7 +276,7 @@ function TurnView({ turn, blocks: bs, who }: { turn: Turn; blocks: Block[]; who:
 /** A line the character spoke: its name in its accent, on a tinted plate, so it never reads as a dispatcher turn. */
 function CharacterLineView({ entry, blocks: bs, who, accent }: { entry: ConversationEntry; blocks: Block[]; who: string; accent: string }) {
   return (
-    <Container flexDirection="column" flexShrink={0} gap={6} paddingLeft={16} paddingY={8} borderLeftWidth={4} borderColor={accent} backgroundColor={shade(accent, 0.86)} borderRadius={4}>
+    <Container flexDirection="column" flexShrink={0} gap={6} paddingLeft={16} paddingY={8} borderLeftWidth={4} borderColor={accent} backgroundColor={shade(accent, 0.86)} borderRadius={corner(4)}>
       <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={accent} flexShrink={0}>
         {entry.source === 'fallback' ? `${who} · PLAIN` : who}
       </Text>
@@ -310,8 +320,8 @@ function BlockView({ b, size, colour }: { b: Block; size: number; colour: string
       )
     case 'code':
       return (
-        <Container backgroundColor={rgba(0, 0, 0, 0.45)} borderRadius={6} padding={12} flexShrink={0} borderLeftWidth={3} borderColor={C.cyanFaint}>
-          <Text fontFamily="inter" fontSize={size * 0.8} lineHeight={1.35} color="#cfe6ee" wordBreak="break-all">
+        <Container backgroundColor={rgba(0, 0, 0, 0.45)} borderRadius={corner(6)} padding={12} flexShrink={0} borderLeftWidth={3} borderColor={C.cyanFaint}>
+          <Text fontFamily="inter" fontSize={size * 0.8} lineHeight={1.35} color={X.code} wordBreak="break-all">
             {b.text}
           </Text>
         </Container>
@@ -325,12 +335,21 @@ function BlockView({ b, size, colour }: { b: Block; size: number; colour: string
   }
 }
 
+/** The pack's panel texture, faint over the Stream's plate, under everything on it. One more draw, only with a pack that has one. */
+function PanelTexture() {
+  const tex = T.textures.panel
+  if (!tex) return null
+  return <Image src={tex} positionType="absolute" positionTop={0} positionLeft={0} width="100%" height="100%" keepAspectRatio={false} opacity={T.theme.assets.panelOpacity} pointerEvents="none" />
+}
+
 /** The plain uikit mesh panel: flat, the same angular size and centre as the layer. */
 export function StreamMesh({ y, ...p }: Omit<ContentProps, 'sizeX' | 'sizeY' | 'pixelSize'> & { y: number }) {
   const px = MESH_WIDTH_M / STREAM_W
   return (
     <group position={[0, y, -RADIUS]}>
-      <StreamContent {...p} sizeX={MESH_WIDTH_M} sizeY={STREAM_H * px} pixelSize={px} />
+      <ThemePart part="stream">
+        <StreamContent {...p} sizeX={MESH_WIDTH_M} sizeY={STREAM_H * px} pixelSize={px} />
+      </ThemePart>
     </group>
   )
 }
@@ -380,7 +399,9 @@ export function StreamLayer({ y, ...p }: Omit<ContentProps, 'sizeX' | 'sizeY' | 
       customRender={render}
     >
       <LayerCamera />
-      <StreamContent {...p} sizeX={LAYER_W} sizeY={LAYER_H} pixelSize={LAYER_W / STREAM_W} />
+      <ThemePart part="stream">
+        <StreamContent {...p} sizeX={LAYER_W} sizeY={LAYER_H} pixelSize={LAYER_W / STREAM_W} />
+      </ThemePart>
     </XRLayer>
   )
 }

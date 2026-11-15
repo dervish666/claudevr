@@ -7,7 +7,9 @@
 
 import { useEffect, useMemo, type DependencyList } from 'react'
 import { BufferAttribute, BufferGeometry, Color, CustomBlending, OneFactor, ShaderMaterial, ZeroFactor, AddEquation } from 'three'
+import type { ShapeBuilder } from './linework.tsx'
 import { useSettings } from './settings.ts'
+import { T } from './theme.ts'
 
 /** An annular sector in the XY plane, angles in radians from +X, counter-clockwise. `aBand` runs -1 (inner edge) to 1 (outer). */
 export function arcGeometry(r: number, width: number, from: number, to: number, segments?: number): BufferGeometry {
@@ -70,6 +72,98 @@ export function bracketRects(w: number, h: number, len: number, t: number): [num
       out.push([sx * (x - t / 2), sy * (y - len / 2), t, len])
     }
   return out
+}
+
+/**
+ * A closed band `t` wide inside the polygon `pts` (counter-clockwise, x y
+ * pairs): its outer edge is the outline, mitred at each corner, so a frame
+ * keeps the same outside size as the brackets it stands in for.
+ */
+export function outlineGeometry(pts: [number, number][], t: number): BufferGeometry {
+  const n = pts.length
+  const pos = new Float32Array(n * 2 * 3)
+  const band = new Float32Array(n * 2)
+  const idx: number[] = []
+  for (let i = 0; i < n; i++) {
+    const [px, py] = pts[(i + n - 1) % n]!
+    const [x, y] = pts[i]!
+    const [nx, ny] = pts[(i + 1) % n]!
+    // Inward normals of the edges in and out of this corner (left of the direction of travel).
+    let ax = x - px
+    let ay = y - py
+    let bx = nx - x
+    let by = ny - y
+    const la = Math.hypot(ax, ay) || 1
+    const lb = Math.hypot(bx, by) || 1
+    ax /= la
+    ay /= la
+    bx /= lb
+    by /= lb
+    const n1x = -ay
+    const n1y = ax
+    let mx = n1x - by
+    let my = n1y + bx
+    const lm = Math.hypot(mx, my) || 1
+    mx /= lm
+    my /= lm
+    const k = t / Math.max(0.2, mx * n1x + my * n1y)
+    pos.set([x, y, 0, x + mx * k, y + my * k, 0], i * 6)
+    band.set([0, 0], i * 2)
+    const o = i * 2
+    const q = ((i + 1) % n) * 2
+    idx.push(o, q, o + 1, o + 1, q, q + 1)
+  }
+  const g = new BufferGeometry()
+  g.setAttribute('position', new BufferAttribute(pos, 3))
+  g.setAttribute('aBand', new BufferAttribute(band, 1))
+  g.setIndex(idx)
+  return g
+}
+
+/** The outline of a w by h box with its corners cut (`chamfer`), rounded (`round`) or square, counter-clockwise. */
+export function framePoints(w: number, h: number, corner: 'square' | 'chamfer' | 'round', c: number): [number, number][] {
+  const x = w / 2
+  const y = h / 2
+  if (corner === 'square') return [[-x, -y], [x, -y], [x, y], [-x, y]]
+  if (corner === 'chamfer')
+    return [[-x + c, -y], [x - c, -y], [x, -y + c], [x, y - c], [x - c, y], [-x + c, y], [-x, y - c], [-x, -y + c]]
+  const out: [number, number][] = []
+  const corners: [number, number, number][] = [[x - c, -y + c, -90], [x - c, y - c, 0], [-x + c, y - c, 90], [-x + c, -y + c, 180]]
+  for (const [cx, cy, a0] of corners)
+    for (let s = 0; s <= 6; s++) {
+      const a = ((a0 + (s * 90) / 6) * Math.PI) / 180
+      out.push([cx + Math.cos(a) * c, cy + Math.sin(a) * c])
+    }
+  return out
+}
+
+/**
+ * A panel's frame in the theme's style: today's corner brackets (`len`
+ * long, `t` thick) or a full outline with square, cut or rounded corners,
+ * the line scaled by the theme's weight, with an optional second, finer
+ * line inside and tick marks standing out from the middle of the top and
+ * bottom edges (outside the box, clear of its text and of the lanes beside
+ * a tile). `alpha` is the
+ * main line's; the second line and the ticks draw fainter. `extras` false
+ * leaves them off a box too small to carry them.
+ */
+export function addFrame(b: ShapeBuilder, w: number, h: number, len: number, t: number, colour: string, alpha = 1, extras = true): void {
+  const f = T.theme.frame
+  const tw = t * f.weight
+  const one = (fw: number, fh: number, fl: number, ft: number) =>
+    f.corner === 'bracket' ? rectsGeometry(bracketRects(fw, fh, fl, ft)) : outlineGeometry(framePoints(fw, fh, f.corner, Math.min(fl * 0.45, fw / 4, fh / 4)), ft)
+  b.add('line', one(w, h, len, tw), colour, alpha)
+  if (f.double && extras) {
+    const inset = tw * 1.8
+    b.add('line', one(w - 2 * inset, h - 2 * inset, len * 0.75, Math.max(0.001, tw * 0.5)), colour, alpha * 0.55)
+  }
+  if (f.ticks && extras) {
+    const tl = Math.min(len * 0.2, 0.007)
+    const tt = Math.max(0.0012, tw * 0.6)
+    const y = h / 2 + tl / 2 + 0.001
+    const gap = Math.min(w * 0.06, 0.012)
+    b.add('line', rectsGeometry([[-gap, y, tt, tl], [gap, y, tt, tl], [-gap, -y, tt, tl], [gap, -y, tt, tl]]), colour, alpha * 0.7)
+  }
 }
 
 /** `n` radial ticks from `inner` to `inner + len`, `w` wide, spread evenly over a full turn (or from..to). */

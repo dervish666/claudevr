@@ -82,7 +82,7 @@ function persona(o: Partial<ConstructorParameters<typeof Persona>[0]> = {}) {
 
 test('characters: parsed and validated like the voices', () => {
   const c = parseCharacters({ Bosun: { voice: 'Atlas', prompt: ' gruff ', confirm: 'quick', heardAs: ['boatswain'], accent: '#F5A524' } }, ['atlas'])
-  assert.deepEqual(c, [{ name: 'bosun', voice: 'atlas', prompt: 'gruff', confirm: 'quick', heardAs: ['boatswain'], accent: '#f5a524' }])
+  assert.deepEqual(c, [{ name: 'bosun', voice: 'atlas', prompt: 'gruff', confirm: 'quick', heardAs: ['boatswain'], accent: '#f5a524', theme: null }])
   assert.equal(parseCharacters({ b: { voice: 'x', prompt: 'p' } }, null)[0]!.confirm, 'card', 'card is the default')
   assert.deepEqual(parseCharacters(undefined, null), [])
   assert.throws(() => parseCharacters({ 'rm -rf': { voice: 'atlas', prompt: 'p' } }, null), /plain words/)
@@ -313,7 +313,7 @@ test('persona: selecting a character selects its voice and is kept; operator mod
     assert.equal(readFileSync(file, 'utf8'), 'purser\n')
     assert.match(lines.system!, /fussy test purser/)
     assert.ok(classifier.system)
-    assert.deepEqual(p.status().character, { name: 'purser', confirm: 'card', accent: null })
+    assert.deepEqual(p.status().character, { name: 'purser', confirm: 'card', accent: null, theme: null })
     p.select(null)
     assert.equal(lines.system, null)
     assert.equal(classifier.system, null)

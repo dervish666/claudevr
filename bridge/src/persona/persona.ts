@@ -59,6 +59,8 @@ export interface PersonaOptions {
   relayWaitMs?: number
   /** A relay that could not be spoken (he held to talk, nobody listening) for this long after the answer came is dropped. */
   relayStaleMs?: number
+  /** The theme pack a character wears, by name, for the HUD (themes.ts resolves it on disk). Default: its own `theme` setting. */
+  themeOf?: (c: Character) => string | null
   log?: (...a: unknown[]) => void
 }
 
@@ -89,7 +91,7 @@ interface Awaiting {
   retries: number
 }
 
-const info = (c: Character): CharacterInfo => ({ name: c.name, confirm: c.confirm, accent: c.accent })
+const ownTheme = (c: Character): string | null => (typeof c.theme === 'string' ? c.theme : null)
 
 /** The line spoken when the model cannot be: the grammar's own words, except where those were never meant to be spoken. */
 export function plainLine(i: Interpretation): string {
@@ -118,7 +120,7 @@ export class Persona {
   private closed = false
 
   constructor(o: PersonaOptions) {
-    this.o = { warmUp: false, lineTimeoutMs: 4_000, classifyTimeoutMs: 3_000, announceGapMs: 20_000, coalesceMs: 1_500, quietAfterVoiceMs: 6_000, relayWaitMs: 600_000, relayStaleMs: 60_000, log: (...a) => console.log('[persona]', ...a), ...o }
+    this.o = { warmUp: false, themeOf: ownTheme, lineTimeoutMs: 4_000, classifyTimeoutMs: 3_000, announceGapMs: 20_000, coalesceMs: 1_500, quietAfterVoiceMs: 6_000, relayWaitMs: 600_000, relayStaleMs: 60_000, log: (...a) => console.log('[persona]', ...a), ...o }
     const notify = () => this.notify()
     this.unsub.push(o.frontMan.onStatus(notify))
     if (o.initial) {
@@ -138,6 +140,7 @@ export class Persona {
 
   status(): PersonaStatus {
     const fm = this.o.frontMan.status()
+    const info = (c: Character): CharacterInfo => ({ name: c.name, confirm: c.confirm, accent: c.accent, theme: (this.o.themeOf ?? ownTheme)(c) })
     return { character: this.cur ? info(this.cur) : null, characters: this.o.characters.map(info), frontMan: this.cur ? fm : { provider: fm.provider, state: 'off', error: null } }
   }
 

@@ -6,7 +6,8 @@
 // cards.ts; this file draws it.
 
 import { memo, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import { computed } from '@preact/signals-core'
 import type { Fleet, Need, NeedKind } from '../../../shared/protocol.ts'
 import { age } from '../hud/useBridge.ts'
@@ -15,7 +16,7 @@ import { second } from './clock.ts'
 import { MORE_SLOT, WING_TOP, columnKey, slotPose } from './layout.ts'
 import { log } from './telemetry.ts'
 import { fit } from './text.ts'
-import { C, FONTS, rgba } from './theme.ts'
+import { C, FONTS, corner, plateOf, weight } from './theme.ts'
 
 const MM = 0.001
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s)
@@ -28,11 +29,12 @@ const RAIL_Z = -1.28
 const RAIL_TILT = Math.atan2(RAIL_BASE_Y + 0.07, -RAIL_Z)
 const CARD_W = 262
 
-const KIND: Record<NeedKind, { word: string; colour: string }> = {
-  question: { word: 'QUESTION', colour: C.purple },
-  approval: { word: 'APPROVAL', colour: C.amber },
-  'needs-sam': { word: 'NEEDS YOU', colour: C.purple },
-  failed: { word: 'FAILED', colour: C.red },
+// Getters, so each card reads the theme's colours when it is built rather than the ones loaded with the module.
+const KIND: Record<NeedKind, { word: string; readonly colour: string }> = {
+  question: { word: 'QUESTION', get colour() { return C.purple } },
+  approval: { word: 'APPROVAL', get colour() { return C.amber } },
+  'needs-sam': { word: 'NEEDS YOU', get colour() { return C.purple } },
+  failed: { word: 'FAILED', get colour() { return C.red } },
 }
 
 function NeedCard({ n, selected, onPick }: { n: Need; selected: boolean; onPick: MutableRefObject<(id: string) => void> }) {
@@ -47,17 +49,17 @@ function NeedCard({ n, selected, onPick }: { n: Need; selected: boolean; onPick:
       gap={4}
       padding={12}
       paddingLeft={14}
-      borderRadius={6}
+      borderRadius={corner(6)}
       borderLeftWidth={5}
       borderTopWidth={selected ? 2 : 0}
       borderRightWidth={selected ? 2 : 0}
       borderBottomWidth={selected ? 2 : 0}
       borderColor={k.colour}
-      backgroundColor={selected ? rgba(28, 20, 40, 0.95) : rgba(8, 10, 14, 0.92)}
+      backgroundColor={selected ? plateOf('railSel', 0.95) : plateOf('rail', 0.92)}
       // uikit cannot take hover={undefined}: pass the hover and click props only when the card can be picked.
       {...(pickable
         ? {
-            hover: { backgroundColor: rgba(30, 30, 48, 0.97) },
+            hover: { backgroundColor: plateOf('railHover', 0.97) },
             onClick: (e: { stopPropagation: () => void }) => {
               e.stopPropagation()
               onPick.current(n.sessionId!)
@@ -83,7 +85,7 @@ function NeedCard({ n, selected, onPick }: { n: Need; selected: boolean; onPick:
       {opts.length > 0 && (
         <Container flexDirection="row" flexWrap="wrap" gap={6} marginTop={2}>
           {opts.map(o => (
-            <Container key={o} borderWidth={2} borderColor={C.cyanDim} borderRadius={4} paddingX={7} paddingY={1}>
+            <Container key={o} borderWidth={weight(2)} borderColor={C.cyanDim} borderRadius={corner(4)} paddingX={7} paddingY={1}>
               <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={16} color={C.body}>
                 {fit(clip(o, 26), 'rajdhani-600')}
               </Text>
@@ -125,7 +127,7 @@ export const Rail = memo(
               <NeedCard key={n.id} n={n} selected={!!n.sessionId && n.sessionId === selected} onPick={onPick} />
             ))}
             {more > 0 && (
-              <Container width={150} flexDirection="column" alignItems="center" justifyContent="center" padding={12} borderRadius={6} borderWidth={2} borderColor={C.purple} backgroundColor={rgba(8, 10, 14, 0.92)}>
+              <Container width={150} flexDirection="column" alignItems="center" justifyContent="center" padding={12} borderRadius={corner(6)} borderWidth={weight(2)} borderColor={C.purple} backgroundColor={plateOf('rail', 0.92)}>
                 <Text fontFamily="rajdhani" fontWeight="bold" fontSize={44} lineHeight={1} color={C.purple}>
                   {`+${more}`}
                 </Text>
@@ -179,11 +181,11 @@ export function useReplies(fleet: Fleet | null, targetId: string | null): [Reply
   return [q, dismiss]
 }
 
-const WHY: Record<ReplyWhy, { word: string; colour: string }> = {
-  said: { word: 'NEW REPLY', colour: C.cyan },
-  finished: { word: 'STOPPED WORKING', colour: C.muted },
-  asking: { word: 'ASKING YOU', colour: C.purple },
-  failed: { word: 'FAILED', colour: C.red },
+const WHY: Record<ReplyWhy, { word: string; readonly colour: string }> = {
+  said: { word: 'NEW REPLY', get colour() { return C.cyan } },
+  finished: { word: 'STOPPED WORKING', get colour() { return C.muted } },
+  asking: { word: 'ASKING YOU', get colour() { return C.purple } },
+  failed: { word: 'FAILED', get colour() { return C.red } },
 }
 
 /** As wide as a tile, so stacks over neighbouring columns never overlap. */
@@ -197,11 +199,11 @@ function ReplyView({ c, onPick }: { c: ReplyCard; onPick: MutableRefObject<(id: 
       flexDirection="column"
       gap={4}
       padding={12}
-      borderRadius={6}
-      borderWidth={2}
+      borderRadius={corner(6)}
+      borderWidth={weight(2)}
       borderColor={w.colour}
-      backgroundColor={rgba(6, 9, 11, 0.95)}
-      hover={{ backgroundColor: rgba(24, 44, 54, 0.97) }}
+      backgroundColor={plateOf('card', 0.95)}
+      hover={{ backgroundColor: plateOf('hover', 0.97) }}
       onClick={e => {
         e.stopPropagation()
         onPick.current(c.id)

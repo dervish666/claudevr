@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "description": "The Bosun, the example character: brass fittings on a navy deck, sea-green for anything asking, chamfered frames and today's rings turning slowly.",
+  "palette": {
+    "plate": "#0a1624",
+    "panel": "#0c1a2a",
+    "line": "#7a6230",
+    "text": "#f2ead8",
+    "dim": "#a49b86",
+    "accent": "#d4a443",
+    "accent2": "#3fc6a4",
+    "warn": "#ff8c42",
+    "bad": "#ff5a4f",
+    "ok": "#7bd88f",
+    "glowStrength": 0.8
+  },
+  "typography": {
+    "heading": { "font": "rajdhani", "letterSpacing": 0.06, "case": "upper" },
+    "label": { "font": "rajdhani", "letterSpacing": 0.1, "case": "upper" },
+    "body": { "font": "inter" }
+  },
+  "frame": { "corner": "chamfer", "weight": 1.2, "double": true, "ticks": true, "stream": true },
+  "core": { "renderer": "rings" },
+  "motion": { "ringSpeed": 0.6, "sweep": "scanner", "transition": "wipe" },
+  "assets": { "emblem": "emblem.png" },
+  "text": { "label": "SALVAGE TUG GRAVEL MAY", "greeting": "Deck's yours, skipper. Hold the grip and sing out." }
+}

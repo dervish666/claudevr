@@ -26,6 +26,8 @@
 //   GET  /api/voice   speech-to-text and text-to-speech status
 //   GET  /api/conversation  character mode: the character's conversation (in memory only)
 //   POST /api/character { name | null } -> select a character, or operator mode; answers like "be X"
+//   GET  /api/themes  the valid theme packs, parsed, and the broken ones with why
+//   GET  /themes/<name>/<file>  an image a pack's theme.json lists      address check + token + origin
 //   WS   /ws          hello, fleet, status, voice, build, line and conversation pushes; the HUD sends presence
 //                                                  address check + token + origin
 //
@@ -62,6 +64,7 @@ import { interpret } from './voice/grammar.ts'
 import { NoStt, SttBusy, SttUnavailable, type SttProvider } from './voice/stt.ts'
 import { NoTts, TtsUnavailable, type TtsProvider } from './voice/tts.ts'
 import type { Persona } from './persona/persona.ts'
+import type { ThemeStore } from './themes.ts'
 
 /** The bridge's own limits on work and traffic. Tests shrink them. */
 export interface Limits {
@@ -134,6 +137,8 @@ export interface BridgeOptions {
   devReload?: boolean
   /** Character mode. Absent, or with no character selected, the bridge answers exactly as in operator mode. */
   persona?: Persona
+  /** Theme packs for the HUD. Absent: none listed, none served. */
+  themes?: ThemeStore
   /** Any of LIMITS to change. */
   limits?: Partial<Limits>
 }
@@ -441,7 +446,48 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (path === '/api/line' && req.method === 'GET') return lineRoute(res, url.searchParams)
     if (path === '/api/conversation' && req.method === 'GET') return sendJson(res, 200, conversation())
     if (path === '/api/character' && req.method === 'POST') return characterRoute(req, res, ip)
+    if (path === '/api/themes' && req.method === 'GET') return sendJson(res, 200, o.themes ? await o.themes.list() : { themes: [], invalid: [] })
     return sendJson(res, 404, { error: 'no such route' })
+  }
+
+  /**
+   * GET /themes/<name>/<file>: an image of a theme pack. Behind the same gate
+   * as the API (origin, budget, token): packs are private config. Names and
+   * files must match the pack patterns exactly, so nothing encoded or dotted
+   * reaches the disk, and only a file the pack's theme.json lists is served.
+   */
+  async function themeAsset(req: IncomingMessage, res: ServerResponse, path: string, ip: string): Promise<void> {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' })
+    if (!originOk(req)) return sendJson(res, 403, { error: 'not from this origin' })
+    const over = apiBudget.take(ip)
+    if (over) return tooMany(res, path, ip, 'api', `over ${limits.apiPerMinute} requests a minute; try again in ${over.retryAfterS} s`, over.retryAfterS)
+    const cred = devices.match(tokenOf(req))
+    if (!cred) {
+      noteOnce(`token:${ip}`, `gate: ${req.method} ${path} from ${ip}: missing, wrong or revoked token`)
+      return sendJson(res, 401, { error: 'pairing token missing, wrong or revoked' })
+    }
+    devices.seen(cred)
+    const parts = path.split('/')
+    if (parts.length !== 4 || !o.themes) return sendJson(res, 404, { error: 'not found' })
+    const a = await o.themes.asset(parts[2]!, parts[3]!)
+    if (!a.ok) {
+      noteOnce(`theme-asset:${ip}:${a.status}`, `themes: ${req.method} ${path.slice(0, 120)} from ${ip}: ${a.status} ${a.error}`)
+      return sendJson(res, a.status, { error: a.error })
+    }
+    const headers = {
+      'content-type': a.type,
+      'cache-control': 'private, max-age=300',
+      etag: a.etag,
+      'x-content-type-options': 'nosniff',
+      'cross-origin-resource-policy': 'same-origin',
+    }
+    if (req.headers['if-none-match'] === a.etag) {
+      res.writeHead(304, headers)
+      res.end()
+      return
+    }
+    res.writeHead(200, { ...headers, 'content-length': String(a.data.length) })
+    res.end(req.method === 'HEAD' ? undefined : a.data)
   }
 
   // ---------------------------------------------------------------- pairing
@@ -874,9 +920,11 @@ export function createBridge(o: BridgeOptions): Bridge {
       ? api(req, res, url, ip)
       : path === '/pair' || path.startsWith('/pair/')
         ? pairPage(req, res, path, ip)
-        : req.method === 'GET' || req.method === 'HEAD'
-          ? serveStatic(req, res, path)
-          : Promise.resolve(sendJson(res, 405, { error: 'method not allowed' }))
+        : path.startsWith('/themes/')
+          ? themeAsset(req, res, path, ip)
+          : req.method === 'GET' || req.method === 'HEAD'
+            ? serveStatic(req, res, path)
+            : Promise.resolve(sendJson(res, 405, { error: 'method not allowed' }))
     handle.catch((err: unknown) => {
       const status = err instanceof HttpError ? err.status : 500
       if (status === 500) log(`error: ${req.method} ${path}:`, err)

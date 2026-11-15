@@ -7,7 +7,8 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Container, Text } from '@react-three/uikit'
+import { Container } from '@react-three/uikit'
+import { Text } from './ui.tsx'
 import { computed, signal, type Signal } from '@preact/signals-core'
 import { CatmullRomCurve3, Color, PlaneGeometry, TubeGeometry, Vector3, type Group } from 'three'
 import type { Session } from '../../../shared/protocol.ts'
@@ -18,11 +19,12 @@ import { CORE_Y, LANE_GAP, MORE_ID, ROW_DY, SUB_GAP, SUB_MORE_H, SUB_W, TILE_H, 
 import { LaneBoxes, LaneLines, laneOf, laneShape, type LaneView } from './SubAgents.tsx'
 import { useBatch, useLines } from './linework.tsx'
 import { RING_R, RING_Z } from './Core.tsx'
-import { arcGeometry, bracketRects, rectsGeometry } from './shapes.tsx'
+import { addFrame, arcGeometry, rectsGeometry } from './shapes.tsx'
 import { useSettings } from './settings.ts'
 import { countRender } from './telemetry.ts'
 import { fit } from './text.ts'
-import { C, DEG, FONTS, STATE_WORDS, levelColour, stateColour, rgba } from './theme.ts'
+import { C, DEG, FONTS, STATE_WORDS, X, corner, levelColour, plateOf, stateColour } from './theme.ts'
+import { usePartKey } from './themes/parts.tsx'
 
 const SLOTS_KEY = 'claudevr.instrument.slots'
 const MM = 0.001
@@ -151,9 +153,9 @@ const TileBody = memo(
         flexDirection="column"
         padding={14}
         gap={2}
-        borderRadius={4}
-        backgroundColor={v.selected ? rgba(18, 34, 42, s.plate) : rgba(10, 14, 17, s.plate)}
-        hover={{ backgroundColor: rgba(24, 44, 54, Math.max(s.plate, 0.92)) }}
+        borderRadius={corner(4)}
+        backgroundColor={v.selected ? plateOf('tileSel', s.plate) : plateOf('tile', s.plate)}
+        hover={{ backgroundColor: plateOf('hover', Math.max(s.plate, 0.92)) }}
         onClick={e => {
           e.stopPropagation()
           onPick.current(v.id)
@@ -214,13 +216,13 @@ function TileLines({ v }: { v: View }) {
       const tile = b.m
       b.m = at(0, 0, 0.002)
       b.group = v.slot
-      b.add('line', rectsGeometry(bracketRects(TILE_W, TILE_H, 0.034, v.selected ? 0.006 : 0.004)), v.colour)
+      addFrame(b, TILE_W, TILE_H, 0.034, v.selected ? 0.006 : 0.004, v.colour)
       b.group = -1
       b.add('line', rectsGeometry([[0, -TILE_H / 2 + 0.0015, TILE_W - 0.08, 0.0025]]), v.colour, 0.35)
       if (v.working) {
         b.m = tile.clone().multiply(placed(b, [-TILE_W / 2 + 0.03, -TILE_H / 2 + 0.0015, 0.003]))
         b.slide.set(TILE_W - 0.06, 0, 0)
-        b.add('line', rectsGeometry([[0, 0, 0.045, 0.004]]), '#d8f8ff')
+        b.add('line', rectsGeometry([[0, 0, 0.045, 0.004]]), X.workBar)
         b.add('glow', new PlaneGeometry(0.07, 0.016), C.cyan, 0.9)
         b.slide.set(0, 0, 0)
       }
@@ -300,8 +302,9 @@ const lanesKey = (items: TileItem[], now: number, selectedAgent: string | null) 
 // ---------------------------------------------------------------- the wings
 
 const PULSE_MS = 2200
-const PURPLE = new Color(C.purple).convertSRGBToLinear()
-const LIT = new Color('#e8fbff').convertSRGBToLinear()
+/** The bracket tints, linear, set from the theme whenever a wing is rebuilt. */
+const PURPLE = new Color()
+const LIT = new Color()
 
 export function Tiles({ items, selected, selectedAgent, pulse, lit, onPick, onPickAgent, tileRefs }: { items: TileItem[]; selected: string | null; selectedAgent: string | null; pulse: { slot: number; n: number } | null; lit: Set<number>; onPick: (id: string) => void; onPickAgent: (sessionId: string, agentId: string | null) => void; tileRefs: MutableRefObject<(Group | null)[]> }) {
   const pick = useRef(onPick)
@@ -356,6 +359,16 @@ export function Tiles({ items, selected, selectedAgent, pulse, lit, onPick, onPi
     columns.set(k, [...(columns.get(k) ?? []), v])
   }
 
+  // Each wing is rebuilt when its side of the scene takes a new theme (themes/parts.tsx): the keys below carry it.
+  const leftKey = usePartKey('left')
+  const rightKey = usePartKey('right')
+  const sideKey = (slot: number) => (slotPose(slot).side < 0 ? leftKey : rightKey)
+  // Squared twice, as these tints always were: Color() decodes sRGB, then convertSRGBToLinear again.
+  useMemo(() => {
+    PURPLE.set(C.purple).convertSRGBToLinear()
+    LIT.set(X.lit).convertSRGBToLinear()
+  }, [leftKey, rightKey])
+
   // Bracket tints: the fake-need flash (purple, blinking), and a tile whose reply card is up (lit).
   const batch = useBatch()
   const flash = useRef({ slot: -1, until: 0 })
@@ -378,13 +391,13 @@ export function Tiles({ items, selected, selectedAgent, pulse, lit, onPick, onPi
   return (
     <>
       {[...columns.entries()].map(([k, vs]) => (
-        <Column key={k} views={vs} lanes={lanes} ats={ats} onPick={pick} onPickAgent={pickAgent} plate={plate} groupRefs={tileRefs} />
+        <Column key={`${k}|${sideKey(vs[0]!.slot)}`} views={vs} lanes={lanes} ats={ats} onPick={pick} onPickAgent={pickAgent} plate={plate} groupRefs={tileRefs} />
       ))}
       {views.map(v => (
-        <MemoTileLines key={v.id} v={v} />
+        <MemoTileLines key={`${v.id}|${sideKey(v.slot)}`} v={v} />
       ))}
       {[...lanes.entries()].map(([slot, lane]) => (
-        <LaneLines key={`lane:${lane.sessionId}`} slot={slot} lane={lane} />
+        <LaneLines key={`lane:${lane.sessionId}|${sideKey(slot)}`} slot={slot} lane={lane} />
       ))}
     </>
   )

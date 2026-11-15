@@ -10,6 +10,12 @@
 // working tile's bright segment slides along its bottom edge (aSlide), and
 // a tile's brackets can be tinted by slot (aGroup: the fake-need flash, a
 // reply card's highlight). Nothing in the frame loop allocates.
+//
+// A theme change sweeps a light along the line work (uFx: a front moving
+// across, or one flash everywhere) while the parts rebuild behind it, and
+// the theme can recolour and scale the glow (uGlow, uGlowGain). At rest
+// those uniforms are neutral and the shaders compute exactly what they did
+// before themes.
 
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react'
 import { useFrame } from '@react-three/fiber'
@@ -32,6 +38,7 @@ import {
   ZeroFactor,
 } from 'three'
 import { settings } from './settings.ts'
+import { T } from './theme.ts'
 
 /** Floats per vertex: position 3, colour 4 (linear rgb, alpha or glow strength), band 1, spin 1, group 1, slide 3. */
 const STRIDE = 13
@@ -115,8 +122,10 @@ uniform float uSpinT;
 uniform float uSlideT;
 uniform vec2 uPivot;
 uniform vec4 uTint[${GROUPS}];
+uniform vec4 uFx;
 varying vec4 vColor;
 varying float vBand;
+varying float vFx;
 void main() {
   vec3 p = position;
   if (aSpin != 0.0) {
@@ -134,23 +143,33 @@ void main() {
   }
   vColor = colour;
   vBand = aBand;
+  // uFx: amount, the front's x, its half width, and the mode (0 a moving front, 1 everywhere at once).
+  vFx = uFx.w > 0.5 ? uFx.x : uFx.x * (1.0 - smoothstep(0.0, uFx.z, abs(p.x - uFx.y)));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }`
 
 const LINE_FRAG = /* glsl */ `
+uniform vec3 uFxColor;
 varying vec4 vColor;
+varying float vFx;
 void main() {
   gl_FragColor = vColor;
+  // The transition's light lands on lines only: a black backing stays black.
+  if (vFx > 0.0 && max(vColor.r, max(vColor.g, vColor.b)) > 0.02) gl_FragColor.rgb += uFxColor * vFx;
   #include <colorspace_fragment>
 }`
 
 /** The same falloff the old per-arc glow had: brightest on the centre line, linear colour added straight to the frame. */
 const GLOW_FRAG = /* glsl */ `
+uniform vec4 uGlow;
+uniform float uGlowGain;
+uniform vec3 uFxColor;
 varying vec4 vColor;
 varying float vBand;
+varying float vFx;
 void main() {
-  float a = pow(max(0.0, 1.0 - abs(vBand)), 2.4) * vColor.a;
-  gl_FragColor = vec4(vColor.rgb * a, 0.0);
+  float a = pow(max(0.0, 1.0 - abs(vBand)), 2.4) * vColor.a * uGlowGain;
+  gl_FragColor = vec4((mix(vColor.rgb, uGlow.rgb, uGlow.a) + uFxColor * vFx) * a, 0.0);
 }`
 
 function uniforms() {
@@ -159,6 +178,10 @@ function uniforms() {
     uSlideT: { value: 0 },
     uPivot: { value: new Vector2(0, 0) },
     uTint: { value: Array.from({ length: GROUPS }, () => new Vector4(0, 0, 0, 0)) },
+    uFx: { value: new Vector4(0, 0, 0.25, 0) },
+    uFxColor: { value: new Color(0, 0, 0) },
+    uGlow: { value: new Vector4(0, 0, 0, 0) },
+    uGlowGain: { value: 1 },
   }
 }
 
@@ -248,6 +271,8 @@ export class LineBatch {
     this.lines = new Layered(lineMat, -20)
     this.glow.mesh.name = 'line-work glow'
     this.lines.mesh.name = 'line-work'
+    // A scene built again (a new session) starts on the theme already applied.
+    this.look(T.theme.palette.glow, T.theme.palette.glowStrength)
   }
   set(key: string, shape: Shape | null): void {
     if (shape) this.shapes.set(key, shape)
@@ -260,6 +285,22 @@ export class LineBatch {
   tint(group: number): Vector4 {
     return this.uniforms.uTint.value[group]!
   }
+  /** The theme's glow: its own colour over every line's (or none), and its strength. */
+  look(glow: string | null, strength: number): void {
+    const g = this.uniforms.uGlow.value
+    if (glow) {
+      col.set(glow)
+      g.set(col.r, col.g, col.b, 1)
+    } else g.set(0, 0, 0, 0)
+    this.uniforms.uGlowGain.value = strength
+  }
+  /** The transition's light: `amount` 0 to 1, at rig x `front` (or everywhere), in `colour` (linear, set by the caller). */
+  fx(amount: number, front: number, everywhere: boolean): void {
+    this.uniforms.uFx.value.set(amount, front, 0.28, everywhere ? 1 : 0)
+  }
+  get fxColour(): Color {
+    return this.uniforms.uFxColor.value
+  }
   /** Per frame: re-merge if something changed, advance the motion. */
   frame(dt: number, now: number): void {
     if (this.dirty) {
@@ -268,7 +309,7 @@ export class LineBatch {
       this.lines.fill([...all.map(s => s.back), ...all.map(s => s.line)])
       this.glow.fill(all.map(s => s.glow))
     }
-    if (settings.current.rotation) this.spinT += dt
+    if (settings.current.rotation) this.spinT += dt * T.theme.motion.ringSpeed
     this.uniforms.uSpinT.value = this.spinT
     this.uniforms.uSlideT.value = (now / 2400) % 1
     this.glow.mesh.visible = settings.current.glow && this.glow.mesh.geometry.drawRange.count > 0

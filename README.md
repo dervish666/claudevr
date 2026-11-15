@@ -58,6 +58,7 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `ffmpeg` | `CLAUDEVR_FFMPEG` | `ffmpeg` on the PATH |
 | client build to serve | `CLAUDEVR_CLIENT_DIR` | `client/dist` (`npm run dev` builds there too) |
 | fake backend's fleet | `CLAUDEVR_FAKE_FLEET` | `demo-fleet.json`, a file name inside `fixtures/` |
+| theme packs folder | `CLAUDEVR_THEMES_DIR` | `.local/themes` (see [Theme packs](#theme-packs)) |
 | fake backend's demo motion | `CLAUDEVR_FAKE_LIVE_MS` | off; every N ms one session changes state or posts a new line, and the dispatcher answers anything sent to it |
 
 Each session carries its sub-agents, trimmed by the bridge: running first, then the most recently finished, six at most with the rest counted, every string clipped. dashweb's `status` maps to running, done (`completed`), failed (`failed`, `killed`, `interrupted`) or unknown. A finished agent more than 150 s gone keeps its line but loses its brief and recent list, which keeps the fleet push small: 6.7 kB for six live sessions becomes 11 kB with their agents, and ten sessions with six running agents each at the clip limits come to 65 kB.
@@ -152,7 +153,37 @@ Operator mode is everything above: plain replies, the 5 s card. Character mode p
 
 **Character buttons.** Both views have a row of buttons, one per configured character and Operator: in the 2D voice dock under the character strip, and in instrument mode under the talk iris. The lit one is on, in its accent. A press calls `POST /api/character { "name": "bosun" }` (`null` for operator mode), which does what "be bosun" does and answers in the same shape, so the HUD speaks the same way. A name the config does not have gets a 404 and changes nothing; a failed press shows its reason under the buttons. The route sits behind the same gate as the others and never sends anything. With no characters configured the row is hidden.
 
-**On the HUD.** The 2D page shows the character, its confirm mode and any front man trouble above the voice row, the line once spoken, and takes the accent for its `--accent` colour. Instrument mode takes the accent for the Core's rings, the dispatcher's iris and the resting voice arc, shows the line under the Stream, and draws a quick send as a slim bar. The tiles, rail, gauges and cards keep their own colours.
+**On the HUD.** The 2D page shows the character, its confirm mode and any front man trouble above the voice row, the line once spoken, and takes the accent for its `--accent` colour. Instrument mode takes the accent for the Core's rings, the dispatcher's iris and the resting voice arc, shows the line under the Stream, and draws a quick send as a slim bar. The tiles, rail, gauges and cards keep their own colours unless the character wears a theme pack (below).
+
+## Theme packs
+
+A character can wear a theme pack that restyles the immersive view: colours, heading and label spacing and case, frames, what sits at the talk button, motion, and a few pictures. Operator mode, and a character without a pack, keep today's look exactly. The 2D page takes only the pack's colours, as CSS custom properties.
+
+Packs live in `.local/themes/<name>/` (or wherever `CLAUDEVR_THEMES_DIR` points), one folder each, holding `theme.json` and the pictures it lists. The folder name is the pack's name: lowercase letters, digits and hyphens. A character wears the pack its `theme` names (`"theme": "harbour"`), or else the pack with its own name when there is one; `"theme": false` turns that off. The bridge reads the folder on every request, so an edited pack shows the next time its character comes on, with no restart.
+
+To make one, copy the tracked example and edit the copy:
+
+```sh
+mkdir -p .local/themes && cp -R themes/bosun .local/themes/bosun
+```
+
+The example character in `config.example.json` is the Bosun, so for him that copy is the whole job. Any key left out keeps today's value, and `{}` is today's look:
+
+| Section | Keys |
+|---|---|
+| `palette` | `plate` `panel` `line` `text` `dim` `accent` `accent2` `warn` `bad` `ok` as `#rrggbb`; `glow` (one colour for every glow, or null for each line's own); `glowStrength` 0 to 2 |
+| `typography` | `heading` and `label`: `font` (`rajdhani` or `inter`), `letterSpacing` in em (-0.05 to 0.3), `case` (`as-is`, `upper`, `lower`, `title`); `body`: `font` |
+| `frame` | `corner` (`bracket` is today's, `square`, `chamfer`, `round`), `weight` 0.5 to 3, `double`, `ticks`, `stream` (a frame round the Stream) |
+| `core` | `renderer`: `rings` (today's iris), `lens`, `scanner`, `bars`, `image` (a hologram); `under`, for `image`, names what draws beneath it; `keepRings` keeps the decorative rings behind any other renderer |
+| `motion` | `ringSpeed` 0 to 4 (times today's), `sweep` along the top arc (`none`; `scanner`, eleven cells with a bright head running end to end and back every 1.6 s; `pulse`, the arc breathing), `transition` (`wipe`, `flash`, `cut`) |
+| `assets` | `core` (the hologram's picture), `emblem` (beside the label, just inside the top of the circle), `panel` (a texture over the Stream's plate), `panelOpacity` 0 to 0.4 |
+| `text` | `label` (40 characters at most, just inside the top of the circle and always shown), `greeting` (120 at most, in place of the hold-to-talk hint until something is heard) |
+
+Pictures are PNG, WebP or JPEG, named in lowercase, at most 1024 px a side and 400 KB. The bridge checks each one's bytes, not just its name; one that fails is dropped and the HUD says why under the Stream. A `theme.json` with an unknown key or a bad value is refused whole: the bridge logs why, and the HUD keeps today's look and says so under the Stream. `GET /api/themes` lists the packs (and the broken ones, with why) and `GET /themes/<name>/<file>` serves a picture its pack's `theme.json` lists and nothing else; both sit behind the gate. The persona status names the pack each character wears.
+
+When the pack changes, a light runs across the line work for about 600 ms and each part of the view is rebuilt as the light passes it, one part a frame (`flash` lights everything at once, `cut` swaps with no light). The faces at the talk button fill the space between the heard line and the character buttons, so they read from across the room; they breathe at rest, follow the mic while you hold to talk, and follow the reply's loudness while it plays. A pack costs one to six draw calls: 47 with ten tiles in operator mode, 48 to 53 with the test packs in the preview. `/?instrument=preview&theme=<name>` forces a pack in the preview.
+
+A pack picks from the two bundled font families. Adding a third means an OFL TTF in `client/fonts`, an entry in `scripts/make-fonts.mjs`, `npm run fonts` to make its atlases, and its name in `FontName` (`shared/theme.ts`) and the atlas table in `client/src/instrument/theme.ts`.
 
 ## Limits and context
 
@@ -174,7 +205,7 @@ The immersive view (Enter instrument on the HUD). The selected session's turns s
 - **Sub-agents.** A session's sub-agents (dashweb reports them per session) show as small boxes in a lane on the outer side of its tile: type, a state mark, the job in one line, and what it is doing while it runs. Running agents always show; a finished one shows dimmed for two minutes after it ends. Three boxes fit beside a tile, and a "+N" box under the lane counts the rest. The lanes are why the outer columns sit further out than the inner ones' edge. The dispatcher's own agents sit in a row on the Stream's top edge. Picking a box shows the agent in the Stream, read-only (type, model, state, running time, the start of its brief, its last few actions); talking still goes to the session it belongs to, and the header says so. Picking it again goes back to that session's turns. The 2D page lists the same agents under each card.
 - **Needs-you rail.** Above the arc, one card per `Fleet.needs` entry, oldest first: who is asking, the question, any options, and how long it has waited. Picking a card selects its session; there are no answer buttons. Past 4, the oldest 3 show with a "+N more waiting" card. No needs, no rail.
 - **Reply cards.** When a session you are not looking at posts a new line, or stops working (idle or needs you), a card pops over its tile's column with the callsign and the first lines, for 8 s. At most 3 show; the rest queue. Picking one opens that session. They are never spoken, and nothing fires on the first fleet read.
-- **Preview.** `/?instrument=preview` renders the scene on a desktop without a headset. `yaw`, `pitch` and `fov` (degrees) aim the camera; `head=1` puts it at the eye so a view turns like a head would. The preview renders the mesh Stream only.
+- **Preview.** `/?instrument=preview` renders the scene on a desktop without a headset. `yaw`, `pitch` and `fov` (degrees) aim the camera; `head=1` puts it at the eye so a view turns like a head would; `theme=<name>` forces a theme pack. The preview renders the mesh Stream only.
 - **Telemetry.** In a headset session the page posts to `.local/instrument.log`: a `frames` line every 5 s with frame times, dropped frames, `drawCalls` (mean and max per frame, every render pass counted), tile and card counts, line-work vertex counts and React `renders` per component; a `draw-census` line 10 s in and then every minute, splitting a frame's draws by scene part; and a `reply-cards` line when cards pop. Frame time on the headset can only be read from there.
 
 Draw calls are kept down by batching: every ring, bracket, gauge and tether is one line-work mesh plus one glow mesh, and each tile column, the rail and each reply stack is one uikit root.

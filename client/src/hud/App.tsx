@@ -10,6 +10,7 @@ import { ContextBadge, LimitsStrip } from './Usage.tsx'
 import { AGENT_WORDS, runTime, shownAgents } from '../../../shared/agents.ts'
 import { TEXT_SIZES, useTextSize, type TextSize } from './textsize.ts'
 import { EnterInstrument, useInstrumentModule } from './InstrumentEntry.tsx'
+import { useThemeCss } from './themeCss.ts'
 
 /** No word from the bridge for this long and the HUD calls its data stale. */
 const STALE_MS = 10_000
@@ -108,13 +109,9 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
     post: bridge.post,
   })
 
-  // A character's accent colours the page while it is selected; operator mode keeps the theme's own.
-  const accent = voice.character?.accent ?? null
-  useEffect(() => {
-    const root = document.documentElement
-    if (accent) root.style.setProperty('--accent', accent)
-    else root.style.removeProperty('--accent')
-  }, [accent])
+  // A character's accent colours the page while it is selected, and its theme pack's palette (if it has one)
+  // replaces the page's colours; operator mode keeps the page's own.
+  useThemeCss(token, voice.character?.theme, voice.character?.accent ?? null)
 
   useEffect(() => {
     if (!fleet) return

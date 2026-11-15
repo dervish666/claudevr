@@ -85,6 +85,34 @@ export function chime(from: Object3D, camera: Object3D): void {
 }
 
 /**
+ * How loud the spoken reply is right now, for a theme's core to move with:
+ * an analyser on the routed reply, read into a buffer made once. Null when
+ * no reply is routed (a flat reply, the preview), so the caller falls back
+ * to a pulse instead of reading silence as a quiet voice.
+ */
+const meter: { analyser: AnalyserNode | null; buf: Uint8Array<ArrayBuffer>; live: number } = { analyser: null, buf: new Uint8Array(256), live: 0 }
+
+export function speechLevel(): number | null {
+  const a = meter.analyser
+  if (!a || meter.live === 0) return null
+  a.getByteTimeDomainData(meter.buf)
+  let sum = 0
+  for (let i = 0; i < meter.buf.length; i++) {
+    const v = (meter.buf[i]! - 128) / 128
+    sum += v * v
+  }
+  return Math.min(1, Math.sqrt(sum / meter.buf.length) * 4)
+}
+
+function analyserFor(ctx: AudioContext): AnalyserNode {
+  if (!meter.analyser || meter.analyser.context !== ctx) {
+    meter.analyser = ctx.createAnalyser()
+    meter.analyser.fftSize = meter.buf.length
+  }
+  return meter.analyser
+}
+
+/**
  * Plays each spoken reply from `at` (the iris): the speaker's <audio>
  * element goes through a PositionalAudio instead of straight out.
  */
@@ -103,11 +131,22 @@ export function routeFrom(at: Object3D, camera: Object3D): ((audio: HTMLAudioEle
       pa.panner.panningModel = 'HRTF'
       pa.setMediaElementSource(audio)
       at.add(pa)
+      // A second, silent branch off the same source: the analyser only listens.
+      const src = pa.source as AudioNode | null
+      const an = analyserFor(ctx)
+      src?.connect(an)
+      meter.live++
       // 'pause' fires as well as 'ended' when a reply finishes: tear down once.
       let gone = false
       const done = () => {
         if (gone) return
         gone = true
+        meter.live = Math.max(0, meter.live - 1)
+        try {
+          src?.disconnect(an)
+        } catch (err) {
+          console.error('instrument: reply meter teardown failed:', err)
+        }
         try {
           pa.disconnect()
         } catch (err) {
