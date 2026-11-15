@@ -7,9 +7,11 @@
 //      "ClaudeVR" -> "Claude"), else of the title, else "Session".
 //   2. Two sessions on the same first word but different projects use the
 //      whole project name ("Claude" and "Claude VR").
-//   3. Whatever still collides is numbered by start time: the oldest keeps
-//      the plain name, the next is "Two", then "Three". Numbering by start
-//      time keeps a callsign from jumping when a newer session appears.
+//   3. Whatever still collides goes by start time: the oldest keeps the
+//      plain name. A later one takes a word from its own title when that
+//      gives a free name ("T-422 gt: management session" -> "GT"), since
+//      "Claude Two" says nothing about what the session is for. Only when
+//      the title has no such word is it numbered: "Two", then "Three".
 //
 // Two adjustments sit on top:
 //   - A word the voice grammar treats as a command ("status", "read",
@@ -94,6 +96,21 @@ function sourceWords(s: CallsignInput): string[] {
   return ['Session']
 }
 
+/** Words too general to tell one session from another. */
+const VAGUE: ReadonlySet<string> = new Set(['the', 'a', 'an', 'and', 'of', 'for', 'in', 'on', 'with', 'my', 'new', 'session', 'sessions', 'thread', 'task', 'chat', 'claude', 'agent', 'manager', 'management', 'untitled'])
+
+/**
+ * A name from the session's own title, for when its project's name is taken:
+ * the first word that says something. A leading task id ("T-422") is not a word.
+ */
+export function titleWord(title: string, not: string): string | null {
+  const w = withoutCommandWords(words(title.replace(/^\s*[A-Za-z]{1,3}-?\d+\b[\s:.-]*/, '')))
+  const pick = w.find(x => x.length > 1 && !VAGUE.has(x.toLowerCase()) && !COMMAND_WORDS.has(x.toLowerCase()) && x.toLowerCase() !== not.toLowerCase())
+  if (!pick) return null
+  // Two or three letters with no vowel are initials, said letter by letter: "gt" -> "GT".
+  return pick.length <= 3 && !/[aeiouy]/i.test(pick) ? pick.toUpperCase() : speakable(pick)
+}
+
 /** Session id -> callsign, unique across `sessions`. */
 export function assignCallsigns(sessions: CallsignInput[], overrides: readonly CallsignOverride[] = []): Map<string, string> {
   const order = [...sessions].sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.id.localeCompare(b.id))
@@ -133,6 +150,11 @@ export function assignCallsigns(sessions: CallsignInput[], overrides: readonly C
     group.forEach((s, i) => {
       const base = name.get(s.id)!
       let c = i === 0 ? base : `${base} ${NUMBERS[i - 1] ?? String(i + 1)}`
+      // A derived name that would need a number, or that an override already holds, tries its title first.
+      if (!fixed.has(s.id) && (i > 0 || taken.has(c.toLowerCase()))) {
+        const t = titleWord(s.title, base)
+        if (t && !taken.has(t.toLowerCase()) && !claimed.has(t.toLowerCase())) c = t
+      }
       // A numbered name can meet a real one ("Claude Two" as a project), or an override.
       for (let n = i + 1; taken.has(c.toLowerCase()); n++) c = `${base} ${NUMBERS[n - 1] ?? String(n + 1)}`
       taken.add(c.toLowerCase())

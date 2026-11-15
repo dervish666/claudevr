@@ -131,7 +131,7 @@ export class SayTts implements TtsProvider {
 // named in the config and one is current; "voice X" by speech changes it.
 
 export interface FishVoice {
-  /** What it is called here and by voice: "jarvis". */
+  /** What it is called here and by voice: "atlas". */
   name: string
   /** fish.audio's id for the voice model (its reference_id). */
   id: string

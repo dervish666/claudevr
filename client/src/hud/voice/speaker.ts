@@ -37,6 +37,11 @@ export class Speaker {
     await this.audio.play()
   }
 
+  /** True while a reply is playing. */
+  busy(): boolean {
+    return !!this.audio && !this.audio.paused && !this.audio.ended
+  }
+
   stop(): void {
     this.seq++
     this.audio?.pause()

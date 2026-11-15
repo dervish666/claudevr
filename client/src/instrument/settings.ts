@@ -14,10 +14,12 @@ export interface Settings {
   rotation: boolean
   /** Opacity of the smoked plates behind body text. */
   plate: 0.92 | 0.7
+  /** The settings panel folded down to a strip, out of the way. */
+  minimised: boolean
 }
 
 const KEY = 'claudevr.instrument.settings'
-const DEFAULTS: Settings = { stream: 'layer', glow: true, dimmer: 0.3, rotation: true, plate: 0.92 }
+const DEFAULTS: Settings = { stream: 'layer', glow: true, dimmer: 0.3, rotation: true, plate: 0.92, minimised: false }
 
 function read(): Settings {
   try {
@@ -30,6 +32,7 @@ function read(): Settings {
       dimmer: v.dimmer === 0 || v.dimmer === 0.5 ? v.dimmer : 0.3,
       rotation: v.rotation !== false,
       plate: v.plate === 0.7 ? 0.7 : 0.92,
+      minimised: v.minimised === true,
     }
   } catch (err) {
     console.error('instrument: cannot read the saved toggles, using defaults:', err)

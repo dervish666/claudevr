@@ -6,6 +6,7 @@ import { Reader } from './Reader.tsx'
 import { VoiceDock } from './Voice.tsx'
 import { useVoice } from './voice/useVoice.ts'
 import { ContextBadge, LimitsStrip } from './Usage.tsx'
+import { TEXT_SIZES, useTextSize, type TextSize } from './textsize.ts'
 import { EnterInstrument, isDemoTile, useInstrumentModule } from './InstrumentEntry.tsx'
 
 /** No word from the bridge for this long and the HUD calls its data stale. */
@@ -101,6 +102,7 @@ function Pairing({ onPaired, reason }: { onPaired: (t: string) => void; reason?:
 
 function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   const bridge = useBridge(token)
+  const [textSize, setTextSize] = useTextSize()
   const now = useNow()
   const [selected, setSelected] = useState<string | null>(null)
   // The session open in the reader, filling the window. Null shows the fleet.
@@ -137,7 +139,17 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
     onHome: instrumentOn ? () => setXrSel(null) : () => setOpen(null),
     immersive,
     refuseSend,
+    announce: bridge.announce,
+    post: bridge.post,
   })
+
+  // A character's accent colours the page while it is selected; operator mode keeps the theme's own.
+  const accent = voice.character?.accent ?? null
+  useEffect(() => {
+    const root = document.documentElement
+    if (accent) root.style.setProperty('--accent', accent)
+    else root.style.removeProperty('--accent')
+  }, [accent])
 
   useEffect(() => {
     if (!fleet) return
@@ -191,7 +203,7 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
         }}
       />
       {mod && <mod.Instrument mode="xr" {...instrumentProps} />}
-      {fleet && <LimitsStrip usage={fleet.usage} now={now} />}
+      {fleet && <LimitsStrip usage={fleet.usage} now={now} extra={<TextSizePicker value={textSize} onPick={setTextSize} />} />}
       {!fleet ? (
         <div className="empty-big">{bridge.link !== 'open' ? 'No fleet data yet.' : bridge.status && !bridge.status.ok ? 'No fleet: the backend has not been read yet.' : 'Connected. Waiting for the first read of the fleet…'}</div>
       ) : reading ? (
@@ -239,6 +251,23 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
           unpair
         </button>
       </footer>
+    </div>
+  )
+}
+
+const SIZE_LABEL: Record<TextSize, string> = { compact: 'S', normal: 'M', large: 'L' }
+
+function TextSizePicker({ value, onPick }: { value: TextSize; onPick: (s: TextSize) => void }) {
+  return (
+    <div className="lim textsize">
+      <span className="lim-label">TEXT</span>
+      <span className="textsize-btns">
+        {TEXT_SIZES.map(s => (
+          <button key={s} aria-pressed={s === value} title={`${s} text`} onClick={() => onPick(s)}>
+            {SIZE_LABEL[s]}
+          </button>
+        ))}
+      </span>
     </div>
   )
 }

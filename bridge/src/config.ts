@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { CallsignOverride } from './backend/callsign.ts'
+import type { Character } from './persona/prompt.ts'
 
 export const REPO_ROOT = resolve(import.meta.dirname, '..', '..')
 
@@ -18,6 +19,8 @@ export interface DashwebConfig {
   /** T3's home, passed as --base-dir. */
   t3BaseDir: string
   pollMs: number
+  /** Working directories whose sessions are the bridge's own and stay out of the fleet. */
+  hideCwds?: string[]
 }
 
 export interface SttConfig {
@@ -50,6 +53,20 @@ export interface TtsConfig {
   fish: FishConfig | null
 }
 
+export interface FrontManConfig {
+  /** "cli": a long-lived `claude -p` on the subscription. "off": every line is the plain one. */
+  provider: 'cli' | 'off'
+  /** The `claude` binary. */
+  bin: string
+  model: string
+  /** Longest wait for a spoken line before the plain one is used. */
+  lineTimeoutMs: number
+  /** Longest wait for a free-form command to be classified before the grammar's reading stands. */
+  classifyTimeoutMs: number
+  /** At most one unprompted line per this many ms. */
+  announceGapMs: number
+}
+
 const STT_MODELS = { parakeet: 'mlx-community/parakeet-tdt-0.6b-v3', whisper: 'small.en' }
 
 export interface Config {
@@ -79,6 +96,11 @@ export interface Config {
   ffmpeg: string
   /** Project or session -> spoken callsign, from the private config. */
   callsigns: CallsignOverride[]
+  /** Character mode's characters; none means operator mode only. */
+  characters: Character[]
+  /** The character to start with when nothing was chosen by voice; null for operator mode. */
+  character: string | null
+  frontMan: FrontManConfig
   /** Set by npm run dev: the HUD reloads itself when the client is rebuilt. */
   dev: boolean
 }
@@ -149,7 +171,7 @@ export function parseCallsigns(v: unknown): CallsignOverride[] {
 }
 
 /**
- * "fish": { "model": "s2.1-pro", "voices": { "jarvis": "<id>", "glados": { "id": "<id>", "heardAs": ["gladys"] } } }
+ * "fish": { "model": "s2.1-pro", "voices": { "atlas": "<id>", "juniper": { "id": "<id>", "heardAs": ["jupiter"] } } }
  * The key comes from FISH_API_KEY or a one-line file (fish.apiKeyFile,
  * default <state dir>/fish-api-key), never from the config file itself.
  */
@@ -174,6 +196,32 @@ export function parseFish(f: Record<string, unknown>, env: Env, stateDir: string
     }
   }
   return { model: String(env.CLAUDEVR_FISH_MODEL ?? f.model ?? 's2.1-pro'), voices, apiKey, keyHint: `set FISH_API_KEY or put the key in ${keyFile}` }
+}
+
+const NAME = /^[a-z][a-z ]{0,30}$/
+
+/**
+ * "characters": { "bosun": { "voice": "atlas", "prompt": "...", "confirm": "quick", "heardAs": ["boatswain"], "accent": "#f5a524" } }
+ * With the fish provider, `voice` must be one of tts.fish.voices; with any
+ * other the character speaks in that provider's one voice.
+ */
+export function parseCharacters(v: unknown, fishVoices: readonly string[] | null): Character[] {
+  if (v === undefined) return []
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('characters must be an object of name -> { voice, prompt, confirm }')
+  return Object.entries(v as Record<string, unknown>).map(([raw, val]) => {
+    const name = raw.trim().toLowerCase()
+    if (!NAME.test(name)) throw new Error(`characters: a character name is one to a few plain words, got ${JSON.stringify(raw)}`)
+    const o = obj(val)
+    const voice = typeof o.voice === 'string' ? o.voice.trim().toLowerCase() : ''
+    if (!NAME.test(voice)) throw new Error(`characters.${name}.voice: the name of a voice, got ${JSON.stringify(o.voice)}`)
+    if (fishVoices && !fishVoices.includes(voice)) throw new Error(`characters.${name}.voice is ${JSON.stringify(voice)}, which is not one of tts.fish.voices (${fishVoices.join(', ')})`)
+    const prompt = typeof o.prompt === 'string' ? o.prompt.trim() : ''
+    if (!prompt || prompt.length > 6000) throw new Error(`characters.${name}.prompt: who the character is, 1 to 6000 characters`)
+    const confirm = oneOf(o.confirm, ['card', 'quick'] as const, 'card', `characters.${name}.confirm`)
+    const accent = o.accent === undefined || o.accent === null ? null : typeof o.accent === 'string' && /^#[0-9a-f]{6}$/i.test(o.accent) ? o.accent.toLowerCase() : null
+    if (o.accent !== undefined && o.accent !== null && accent === null) throw new Error(`characters.${name}.accent: a colour as #rrggbb, got ${JSON.stringify(o.accent)}`)
+    return { name, voice, prompt, confirm, heardAs: list(o.heardAs), accent }
+  })
 }
 
 function fixtureName(v: string): string {
@@ -207,6 +255,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
       t3Bin: absolute(String(t3Bin), REPO_ROOT),
       t3BaseDir: absolute(String(t3BaseDir), REPO_ROOT),
       pollMs: int(env.CLAUDEVR_DASHWEB_POLL_MS ?? fileDash.pollMs, 2000, 'dashweb.pollMs'),
+      hideCwds: [join(stateDir, 'frontman')],
     }
   }
 
@@ -234,6 +283,21 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
   }
   if (fish && !fish.voices.some(v => v.name === tts.voice)) throw new Error(`tts.voice is ${JSON.stringify(tts.voice)}, which is not one of tts.fish.voices (${fish.voices.map(v => v.name).join(', ')})`)
 
+  const characters = parseCharacters(file.characters, fish ? fish.voices.map(v => v.name) : null)
+  const characterRaw = env.CLAUDEVR_CHARACTER ?? (file.character as string | undefined)
+  const character = characterRaw === undefined || characterRaw === '' || characterRaw === null ? null : String(characterRaw).trim().toLowerCase()
+  if (character !== null && !characters.some(c => c.name === character)) throw new Error(`character is ${JSON.stringify(character)}, which is not one of characters (${characters.map(c => c.name).join(', ') || 'none configured'})`)
+  const fileFm = obj(file.frontMan)
+  const frontMan: FrontManConfig = {
+    provider: oneOf(env.CLAUDEVR_FRONTMAN ?? fileFm.provider, ['cli', 'off'] as const, 'cli', 'frontMan.provider'),
+    bin: String(env.CLAUDEVR_CLAUDE_BIN ?? fileFm.bin ?? 'claude'),
+    model: String(env.CLAUDEVR_FRONTMAN_MODEL ?? fileFm.model ?? 'haiku'),
+    lineTimeoutMs: int(fileFm.lineTimeoutMs, 4000, 'frontMan.lineTimeoutMs'),
+    classifyTimeoutMs: int(fileFm.classifyTimeoutMs, 3000, 'frontMan.classifyTimeoutMs'),
+    announceGapMs: int(fileFm.announceGapMs, 20_000, 'frontMan.announceGapMs'),
+  }
+  if (!/^[\w.:\[\]-]{1,80}$/.test(frontMan.model)) throw new Error(`frontMan.model must be a model name such as haiku, got ${JSON.stringify(frontMan.model)}`)
+
   return {
     backend,
     host: env.CLAUDEVR_HOST ?? (file.host as string | undefined) ?? '0.0.0.0',
@@ -252,6 +316,9 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     tts,
     ffmpeg: String(env.CLAUDEVR_FFMPEG ?? file.ffmpeg ?? 'ffmpeg'),
     callsigns: parseCallsigns(file.callsigns),
+    characters,
+    character,
+    frontMan,
     dev: bool(env.CLAUDEVR_DEV, false, 'CLAUDEVR_DEV'),
   }
 }

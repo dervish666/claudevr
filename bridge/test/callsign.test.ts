@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { assignCallsigns, relabelFleet, words } from '../src/backend/callsign.ts'
+import { assignCallsigns, titleWord, relabelFleet, words } from '../src/backend/callsign.ts'
 
 const s = (id: string, project: string | null, startedAt: number, title = '') => ({ id, project, title, startedAt })
 
@@ -105,4 +105,20 @@ test('relabelFleet applies overrides to sessions and needs, and returns heard-as
   assert.equal(r.fleet.needs[0]!.callsign, 'Claude')
   assert.deepEqual(r.heardAs.get('vr'), ['Jose'])
   assert.equal(fleet.sessions[0]!.callsign, 'Claude VR', 'the input is not changed')
+})
+
+test('a second session in the same project is named from its own title before it is numbered', () => {
+  const at = (id: string, project: string, title: string, startedAt: number) => ({ id, project, title, startedAt })
+  const names = (ss: ReturnType<typeof at>[], o: Parameters<typeof assignCallsigns>[1] = []) => [...assignCallsigns(ss, o).values()].sort()
+  // The oldest keeps the plain name; the manager started for a task is called after the task.
+  assert.deepEqual(names([at('a', 'Claude', 'workspace chat', 1), at('b', 'Claude', 'T-422 gt: management session', 2)]), ['Claude', 'GT'])
+  assert.deepEqual(names([at('a', 'Claude', 'x', 1), at('b', 'Claude', 'T-415 brisflix: pair WhatsApp', 2)]), ['Brisflix', 'Claude'])
+  // An override holds "Claude": the derived session moves to its title, not to "Claude Two".
+  assert.deepEqual(names([at('vr', 'ClaudeVR', 'Voice hub', 1), at('b', 'Claude', 'T-422 gt: management session', 2)], [{ match: 'claudevr', callsign: 'Claude', heardAs: [] }]), ['Claude', 'GT'])
+  // A title with nothing to offer, or whose word is taken, is still numbered.
+  assert.deepEqual(names([at('a', 'Claude', 'x', 1), at('b', 'Claude', 'new session', 2)]), ['Claude', 'Claude Two'])
+  assert.deepEqual(names([at('a', 'Tally', 'x', 1), at('b', 'Claude', 'y', 2), at('c', 'Claude', 'tally sync', 3)]), ['Claude', 'Claude Two', 'Tally'])
+  // Never a command word, never the task id.
+  assert.equal(titleWord('T-9 read the status page', 'Claude'), 'Page')
+  assert.equal(titleWord('T-422', 'Claude'), null)
 })

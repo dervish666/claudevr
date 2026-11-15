@@ -49,3 +49,10 @@ const hex2 = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(1
  * came out a washed grey. Hex with alpha goes through the converting path.
  */
 export const rgba = (r: number, g: number, b: number, a: number) => `#${hex2(r)}${hex2(g)}${hex2(b)}${hex2(a * 255)}`
+
+/** `hex` darkened toward black by `f` (0 none, 1 black): the dim and faint steps of an accent, as cyanDim and cyanFaint are of cyan. */
+export function shade(hex: string, f: number): string {
+  const n = parseInt(hex.slice(1), 16)
+  const k = 1 - f
+  return `#${hex2(((n >> 16) & 255) * k)}${hex2(((n >> 8) & 255) * k)}${hex2((n & 255) * k)}`
+}

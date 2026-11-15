@@ -140,6 +140,11 @@ export interface UsageInput {
   /** GET /api/state/office, or the Error that read ended in; undefined when it was not read. */
   office?: unknown
   spend?: Figure<number>
+  /**
+   * Sessions working in these directories are left out. The bridge's own
+   * front-man processes are Claude sessions too, and dashweb lists them.
+   */
+  hideCwds?: readonly string[]
 }
 
 /**
@@ -170,6 +175,8 @@ export function normalise(boardRaw: unknown, t3Raw: unknown, now = Date.now(), e
     if (!isObj(v)) return
     const id = str(v.sessionId)
     if (!id || seen.has(id)) return
+    const cwd = str(v.cwd)
+    if (cwd && extra.hideCwds?.some(d => cwd === d || cwd.startsWith(d + '/'))) return
     seen.add(id)
     views.push({ view: v, role: role ?? str(v.role) })
   }

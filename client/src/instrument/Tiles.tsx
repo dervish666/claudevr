@@ -78,6 +78,8 @@ interface View {
   slot: number
   kind: TileItem['kind']
   title: string
+  /** What the session is about: its own title, when that says more than the callsign. Empty when it does not. */
+  subject: string
   stateLine: string
   colour: string
   working: boolean
@@ -87,19 +89,29 @@ interface View {
   selected: boolean
 }
 
+const letters = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/** The session's title for the tile's foot, cut to fit beside the age. Empty when it only repeats the callsign. */
+function subjectOf(title: string, callsign: string): string {
+  const t = title.trim()
+  if (!t || letters(t) === letters(callsign)) return ''
+  return (t.length > 27 ? `${t.slice(0, 26).trimEnd()}…` : t).toUpperCase()
+}
+
 function viewOf(it: TileItem, selected: boolean): View {
   const base = { id: itemId(it), slot: it.slot, kind: it.kind, selected }
-  if (it.kind === 'demo') return { ...base, title: it.callsign, stateLine: 'DEMO · NOT SENDABLE', colour: C.amber, working: false, action: 'Demo tile, not a session. Never sendable.', activeAt: null, pct: null }
+  if (it.kind === 'demo') return { ...base, title: it.callsign, subject: '', stateLine: 'DEMO · NOT SENDABLE', colour: C.amber, working: false, action: 'Demo tile, not a session. Never sendable.', activeAt: null, pct: null }
   if (it.kind === 'more') {
     const names = it.hidden.map(s => s.callsign).join(', ')
     const asking = it.hidden.filter(s => s.state === 'asking').length
-    return { ...base, title: `+${it.hidden.length}`, stateLine: `MORE SESSIONS${asking ? ` · ${asking} ASKING` : ''}`, colour: asking ? C.purple : C.muted, working: false, action: names, activeAt: null, pct: null }
+    return { ...base, title: `+${it.hidden.length}`, subject: '', stateLine: `MORE SESSIONS${asking ? ` · ${asking} ASKING` : ''}`, colour: asking ? C.purple : C.muted, working: false, action: names, activeAt: null, pct: null }
   }
   const s = it.session
   const action = s.asking?.text ?? s.action ?? s.lastLine ?? 'Nothing said yet.'
   return {
     ...base,
     title: s.callsign.toUpperCase(),
+    subject: subjectOf(s.title, s.callsign),
     stateLine: `${STATE_WORDS[s.state]}${s.canSend ? '' : ' · READ ONLY'}`,
     colour: stateColour(s.state),
     working: s.state === 'working' || s.state === 'thinking',
@@ -167,9 +179,15 @@ const TileBody = memo(
           </Text>
         </Container>
         <Container flexGrow={1} />
-        <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted}>
-          {ageText}
-        </Text>
+        {/* The foot: what the session is about on the left, how long since it moved on the right. */}
+        <Container flexDirection="row" alignItems="flex-end" justifyContent="space-between" gap={10} flexShrink={0}>
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={16} color={C.body} flexShrink={1} wordBreak="keep-all">
+            {fit(v.subject, 'rajdhani-600')}
+          </Text>
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted} flexShrink={0}>
+            {ageText}
+          </Text>
+        </Container>
         {/* The context gauge's number sits inside the drawn arc, top right. */}
         {!more && (
           <Container positionType="absolute" positionTop={22} positionRight={14} width={72} height={72} justifyContent="center" alignItems="center" flexDirection="column">

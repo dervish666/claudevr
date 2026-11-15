@@ -11,6 +11,8 @@ import { FakeAdapter } from './backend/fake.ts'
 import type { SessionBackend } from './backend/types.ts'
 import { HelperStt, NoStt, type SttProvider } from './voice/stt.ts'
 import { FishTts, NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
+import { CliFrontMan, NoFrontMan, type FrontMan } from './persona/frontman.ts'
+import { Persona } from './persona/persona.ts'
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a)
 
@@ -68,6 +70,39 @@ function main(): void {
     tts = fishTts
   }
 
+  // Character mode, only when characters are configured. The choice made by
+  // voice is kept in <state>/character (empty for operator mode) and wins
+  // over the config's `character` on the next start.
+  let persona: Persona | undefined
+  if (cfg.characters.length) {
+    const characterFile = join(cfg.stateDir, 'character')
+    let initial = cfg.character
+    try {
+      const kept = readFileSync(characterFile, 'utf8').trim()
+      if (!kept) initial = null
+      else if (cfg.characters.some(c => c.name === kept)) initial = kept
+      else log(`[persona] ${characterFile} names ${JSON.stringify(kept)}, which is not a configured character; using ${initial ?? 'operator mode'}`)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`[persona] could not read ${characterFile}: ${(err as Error).message}`)
+    }
+    const fm = cfg.frontMan
+    const make = (role: string): FrontMan =>
+      fm.provider === 'cli' ? new CliFrontMan({ bin: fm.bin, model: fm.model, cwd: join(cfg.stateDir, 'frontman', role), log: (...a) => log(`[frontman:${role}]`, ...a) }) : new NoFrontMan()
+    persona = new Persona({ warmUp: true,
+      characters: cfg.characters,
+      frontMan: make('lines'),
+      classifier: make('classify'),
+      tts,
+      stateFile: characterFile,
+      initial,
+      lineTimeoutMs: fm.lineTimeoutMs,
+      classifyTimeoutMs: fm.classifyTimeoutMs,
+      announceGapMs: fm.announceGapMs,
+      log: (...a) => log('[persona]', ...a),
+    })
+    log(`[persona] characters: ${cfg.characters.map(c => c.name).join(', ')}; ${persona.current() ? `character: ${persona.current()!.name}` : 'operator mode'}; front man: ${fm.provider === 'cli' ? `${fm.bin} (${fm.model})` : 'off'}`)
+  }
+
   const bridge = createBridge({
     backend,
     token,
@@ -87,6 +122,7 @@ function main(): void {
     clipMaxBytes: cfg.stt.maxBytes,
     callsigns: cfg.callsigns,
     devReload: cfg.dev,
+    persona,
   })
 
   bridge.server.on('error', err => {
@@ -121,6 +157,7 @@ function main(): void {
     log(`${sig}: stopping`)
     backend.close()
     stt.close()
+    persona?.close()
     bridge.close().then(
       () => process.exit(0),
       err => {

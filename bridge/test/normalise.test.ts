@@ -155,3 +155,16 @@ test('readT3 and parseLocalStamp read what dashweb writes', () => {
   assert.equal(parseLocalStamp('15:10'), null)
   assert.equal(parseLocalStamp(null), null)
 })
+
+test("the bridge's own sessions, by working directory, stay out of the fleet", () => {
+  const b = board()
+  const own = { sessionId: 'own-1', name: 'lines-81', kind: 'interactive', status: 'idle', cwd: '/state/frontman/lines', startedAt: 1, updatedAt: 1, recent: [], agents: [], asking: [] }
+  const near = { ...own, sessionId: 'near-1', name: 'frontman-notes', cwd: '/state/frontman-notes' }
+  b.other.push(own, near)
+  const shown = normalise(b, t3(), Date.now()).fleet.sessions.map(s => s.id)
+  assert.ok(shown.includes('own-1'), 'shown when nothing is hidden')
+  const hidden = normalise(b, t3(), Date.now(), { hideCwds: ['/state/frontman'] }).fleet.sessions.map(s => s.id)
+  assert.ok(!hidden.includes('own-1'))
+  assert.ok(hidden.includes('near-1'), 'a directory that only starts with the same letters is not inside it')
+  assert.equal(hidden.length, shown.length - 1)
+})

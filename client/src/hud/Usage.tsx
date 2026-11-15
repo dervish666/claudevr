@@ -3,6 +3,7 @@
 // A figure the backend does not have reads "not available"; one from a
 // source gone quiet keeps its value, dimmed, with its age.
 
+import type { ReactNode } from 'react'
 import type { ContextUse, Figure, LimitWindow, Usage } from '../../../shared/protocol.ts'
 import { hhmm } from '../time.ts'
 import { age } from './useBridge.ts'
@@ -35,13 +36,14 @@ function Tile({ label, value, cls, sub, title }: { label: string; value: string;
 
 const staleSub = (f: Figure<unknown>, now: number) => (f.stale ? (f.at === null ? 'age unknown' : `${age(f.at, now)} old`) : null)
 
-export function LimitsStrip({ usage, now }: { usage: Usage | undefined; now: number }) {
+export function LimitsStrip({ usage, now, extra }: { usage: Usage | undefined; now: number; extra?: ReactNode }) {
   // A bridge from before this field existed sends none: say so, never 0%.
   if (!usage) {
     return (
       <section className="limits" aria-label="Usage limits">
         <Tile label="LIMITS" value="not available" cls="na" sub="this bridge sends no usage figures" />
         <Tile label="LOCAL" value={hhmm(new Date(now))} cls="clock" sub={null} />
+        {extra}
       </section>
     )
   }
@@ -72,6 +74,7 @@ export function LimitsStrip({ usage, now }: { usage: Usage | undefined; now: num
         <Tile label="TODAY" value={`$${todayUsd.value.toFixed(2)}`} cls={`spend${todayUsd.stale ? ' stale' : ''}`} sub={staleSub(todayUsd, now) ?? 'API-rate cost'} title={todayUsd.note ?? undefined} />
       )}
       <Tile label="LOCAL" value={hhmm(new Date(now))} cls="clock" sub={null} />
+      {extra}
     </section>
   )
 }

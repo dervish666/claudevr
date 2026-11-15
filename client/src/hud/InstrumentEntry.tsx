@@ -80,7 +80,7 @@ export function EnterInstrument({ mod, error, active, onEnter }: { mod: Instrume
             ? 'In instrument mode.'
             : cut
               ? 'The page reloaded and ended the last session. One press goes back in.'
-              : 'Immersive AR with passthrough. Exit from the spike controls, or press the Meta button.'
+              : 'Immersive AR with passthrough. Exit from the settings panel, or press the Meta button.'
   return (
     <section className={`enter-instrument${cut && ready ? ' cut' : ''}${error ? ' failed' : ''}`} aria-label="Instrument mode">
       <button className="big enter-btn" disabled={!ready} onClick={onEnter}>

@@ -15,6 +15,9 @@
 //   confirm / cancel               only while a card is armed ("send", "yes" / "cancel", "no")
 //   dispatcher                     "dispatcher", "back to the dispatcher": drop the selection
 //   voice X                        "voice X", "change voice to X", "use the X voice"; "voices" lists them
+//   <character>, ...               the current character's name first: a command still runs,
+//                                  anything else is a question for the character, sent to no session
+//   character X                    "be X", "character X", "X mode"; "operator mode" drops it; "characters" lists them
 //   anything else, 3+ words        a message for the dispatcher, if the fleet has one
 //   anything else, reader open     a message for the session being read, never the dispatcher
 //
@@ -32,7 +35,7 @@ const PLAUSIBLE = 0.6
 const DIGITS: Record<string, string> = { '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine', '10': 'ten' }
 const FILLERS = new Set(['um', 'uh', 'er', 'erm', 'hmm', 'hey', 'so', 'please', 'right', 'okay', 'ok', 'oh'])
 const CONFIRM = new Set(['send', 'send it', 'send that', 'send this', 'yes', 'yes send', 'yes send it', 'yeah', 'yep', 'confirm', 'confirmed', 'go', 'go ahead', 'do it'])
-const CANCEL = new Set(['cancel', 'cancel it', 'cancel that', 'no', 'nope', 'stop', 'abort', 'never mind', 'nevermind', 'scrap that', 'scrap it', "don't send", 'do not send', 'dont send', 'forget it'])
+const CANCEL = new Set(['cancel', 'cancel it', 'cancel that', 'no', 'nope', 'stop', 'abort', 'never mind', 'nevermind', 'scrap that', 'scrap it', "don't send", 'do not send', 'dont send', 'forget it', 'belay', 'belay that', 'belay it'])
 /** The words before a callsign that mean `tell`. */
 const TELL = new Set(['tell', 'ask', 'message'])
 /** Shorter than this, and not a command, is noise rather than a message for the dispatcher. */
@@ -282,13 +285,18 @@ export interface InterpretInput {
   /** The speaking voices the bridge can change between, and the current one. Empty: it has one voice. */
   voices?: readonly { name: string; heardAs: readonly string[] }[]
   voice?: string | null
+  /** The characters character mode can take on, and the current one (null: operator mode). */
+  characters?: readonly { name: string; heardAs: readonly string[] }[]
+  character?: string | null
+  /** Set by interpret itself for the words after the character's name. */
+  addressed?: boolean
   now: number
 }
 
 const VOICE_LIST = /^(?:(?:what|which) voices?(?: are there| do you have| have you got| can you do)?|(?:list|show)(?: me)?(?: the| your)? voices|voices)$/
 /** Explicit: the words say it is about the voice, so a name that matches nothing gets an answer. */
 const VOICE_SET = [/^(?:(?:change|switch|set)(?: the| your)? voice to|(?:use|try|do)(?: the)? voice|voice)(?: the)? (.+?)(?: voice)?$/, /^(?:use|try|do|be|become|switch to|change to)(?: the)? (.+) voice$/]
-/** Loose: "glados voice". Taken only when the name is a voice. */
+/** Loose: "juniper voice". Taken only when the name is a voice. */
 const VOICE_LOOSE = /^(.+) voice$/
 
 /** "voice X" and "voices". Null when the words are not about the voice. */
@@ -306,6 +314,31 @@ export function voiceCommand(text: string, input: Pick<InterpretInput, 'voices' 
   if (!explicit || heard.split(' ').length > 3) return null
   if (!names.length) return { kind: 'voice', voice: null, say: 'This bridge has one voice.' }
   return { kind: 'voice', voice: null, say: r.why === 'ambiguous' ? `Which voice: ${r.candidates.map(c => c.callsign).join(', or ')}?` : `No voice called ${heard}. There is ${names.join(', ')}.` }
+}
+
+const CHARACTER_LIST = /^(?:(?:what|which) characters?(?: are there| do you have| have you got| can you do)?|(?:list|show)(?: me)?(?: the| your)? characters|characters)$/
+const OPERATOR = /^(?:(?:go|switch|change|come)?(?: ?back)? ?(?:to|into) )?(?:the )?(?:operator|plain|normal) mode$|^(?:drop|lose|stop)(?: the)? (?:character|act)$/
+/** Explicit: the words say it is a character, so a name that matches nothing gets an answer. */
+const CHARACTER_SET = /^(?:(?:switch|change) to )?character (.+)$/
+/** Loose: taken only when the name is a character. "be quiet" is not a character, so it falls through. Speech-to-text writes a clipped "be" as "B." or "bee". */
+const CHARACTER_LOOSE = [/^(?:be|become|b|bee) (.+)$/, /^(?:(?:switch|change|go) (?:to|into) )?(.+) mode$/]
+
+/** "be X", "character X", "X mode", "operator mode", "characters". Null when the words are not about the character. */
+export function characterCommand(text: string, input: Pick<InterpretInput, 'characters' | 'character'>): Interpretation | null {
+  const chars = input.characters ?? []
+  const names = chars.map(c => c.name)
+  const cur = input.character ?? null
+  const none = 'No characters are set up in the bridge config.'
+  if (CHARACTER_LIST.test(text)) return { kind: 'character', character: cur, changed: false, say: names.length ? `Characters: ${names.join(', ')}.${cur ? ` Now: ${cur}.` : ' Now: operator mode.'}` : none }
+  if (OPERATOR.test(text)) return { kind: 'character', character: null, changed: cur !== null, say: cur ? 'Operator mode.' : 'Already in operator mode.' }
+  const explicit = CHARACTER_SET.exec(text)?.[1]
+  const heard = explicit ?? CHARACTER_LOOSE.map(r => r.exec(text)?.[1]).find(Boolean)
+  if (!heard) return null
+  const r = resolve(heard, chars.map(c => ({ sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] })))
+  if (r.ok) return { kind: 'character', character: r.target.callsign, changed: r.target.callsign !== cur, say: r.target.callsign === cur ? `Already ${r.target.callsign}.` : `Character: ${r.target.callsign}.` }
+  if (!explicit || heard.split(' ').length > 3) return null
+  if (!names.length) return { kind: 'character', character: cur, changed: false, say: none }
+  return { kind: 'character', character: cur, changed: false, say: r.why === 'ambiguous' ? `Which character: ${r.candidates.map(c => c.callsign).join(', or ')}?` : `No character called ${heard}. There is ${names.join(', ')}.` }
 }
 
 const capitalise = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s)
@@ -347,6 +380,16 @@ function whichSay(why: 'ambiguous' | 'no-match' | 'no-dispatcher', heard: string
   return `I don't know ${heard ? `"${heard}"` : 'that name'}. Who is it for?${opts}`
 }
 
+/** How many leading words are the character's name (or what it is heard as); 0 when he is not talking to it. */
+export function addressedTo(ts: readonly Token[], c: { name: string; heardAs: readonly string[] }): number {
+  const target: Target = { sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] }
+  const most = Math.max(...[c.name, ...c.heardAs].map(n => n.trim().split(/\s+/).length))
+  for (let n = Math.min(most, ts.length); n >= 1; n--) {
+    if (rank(ts.slice(0, n).map(t => t.norm).join(' '), [target])[0]!.score >= ACCEPT) return n
+  }
+  return 0
+}
+
 export function interpret(input: InterpretInput): Interpretation {
   const ts = stripFillers(tokens(input.transcript))
   const text = ts.map(t => t.norm).join(' ')
@@ -357,6 +400,21 @@ export function interpret(input: InterpretInput): Interpretation {
   const byId = (id: string) => sessions.find(s => s.id === id)!
 
   if (!text) return { kind: 'unknown', say: 'I heard nothing I could use.' }
+
+  // The current character's name first means he is talking to the character.
+  // A command after the name still runs ("Atlas, status"). Words that would
+  // only have been passed on as a message are a question for the character
+  // instead, and reach no session, whatever is open in the reader.
+  const me = input.addressed ? null : ((input.characters ?? []).find(c => c.name === input.character) ?? null)
+  const named = me ? addressedTo(ts, me) : 0
+  if (me && named) {
+    const rest = ts.slice(named)
+    const ask: Interpretation = { kind: 'ask', character: me.name, question: joinRaw(rest), say: rest.length ? `${capitalise(me.name)} did not answer in time.` : 'Listening.' }
+    if (!rest.length) return ask
+    const inner = interpret({ ...input, transcript: rest.map(t => t.raw).join(' '), focusId: null, addressed: true })
+    const passedOn = inner.kind === 'unknown' || (inner.kind === 'tell' && inner.viaDispatcher) || (inner.kind === 'which' && inner.why === 'no-dispatcher')
+    return passedOn ? ask : inner
+  }
 
   // Confirm and cancel words mean something only while a card is armed,
   // and only as the whole utterance: "send" inside a sentence is not a yes.
@@ -374,13 +432,18 @@ export function interpret(input: InterpretInput): Interpretation {
   // About the bridge's own voice, so it needs no fleet. Not while a card is
   // armed or a name is being asked for: those words belong to the message.
   if (input.context === 'none') {
+    // With no characters configured nothing here matches, so operator mode parses as it always has.
+    if (input.characters?.length) {
+      const c = characterCommand(text, input)
+      if (c) return c
+    }
     const v = voiceCommand(text, input)
     if (v) return v
   }
 
   if (!fleet) return { kind: 'unknown', say: 'No fleet data yet, so I cannot act on that.' }
 
-  if (/^(?:(?:what's|whats|what is|give me|read)(?: the| me the)? )?(?:fleet )?status(?: report| update)?$/.test(text) || /^how(?:'s| is| are) (?:everyone|everybody|the fleet|things)(?: doing)?$/.test(text)) {
+  if (/^(?:(?:what's|whats|what is|give me|read)(?: the| me the)? )?(?:fleet )?status(?: report| update)?(?: (?:of|on|for) (?:the |my )?(?:fleet|agents|sessions|team|everyone|everything))?$/.test(text) || /^how(?:'s| is| are) (?:everyone|everybody|the fleet|things)(?: doing)?$/.test(text)) {
     const a = statusAnswer(fleet)
     return { kind: 'status', say: a.say, lines: a.lines }
   }

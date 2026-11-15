@@ -4,11 +4,11 @@
 
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Fleet } from '../../../shared/protocol.ts'
-import { SEND_COUNTDOWN_MS, type Voice } from './voice/useVoice.ts'
+import type { Voice } from './voice/useVoice.ts'
 
 export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet | null; now: number; focusId: string | null }) {
   const focusCallsign = focusId ? (fleet?.sessions.find(s => s.id === focusId)?.callsign ?? null) : null
-  const { phase, heard, reply, card, which, muted, voiceOutError, talking, sttProblem, ttsProblem } = v
+  const { phase, heard, reply, card, which, muted, voiceOutError, talking, sttProblem, ttsProblem, character, lineWaiting, announced, frontManProblem } = v
 
   // The pointer: the Quest's controller ray and trigger arrive as pointer
   // events. Capture keeps the hold going if the ray drifts off the button;
@@ -42,7 +42,42 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
         </div>
       )}
 
-      {card && (
+      {character && (
+        <div className={`voice-character${frontManProblem ? ' warn' : ''}`} role="status">
+          <strong>{character.name}</strong>
+          <span className="muted"> · {character.confirm === 'quick' ? '2 s sends' : '5 s cards'} · say "operator mode" to drop it</span>
+          {frontManProblem && <span> · {frontManProblem}</span>}
+        </div>
+      )}
+
+      {card?.quick && (
+        <div className={`quickline rb-${card.state}`} aria-live="assertive">
+          <span className="ql-to">
+            To <strong>{card.callsign}</strong>
+            {!fleetIds.has(card.sessionId) && <span className="rb-warn"> · gone</span>}
+          </span>
+          <span className="ql-text">{card.text}</span>
+          {armed ? (
+            <>
+              {talking ? <span className="rb-left">Paused</span> : <Countdown key={card.sendAt} sendAt={card.sendAt} total={card.countdownMs} slim />}
+              <button className="ql-cancel" onClick={() => v.cancel('Cancelled. Nothing sent.')}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <span className="rb-result">
+              <span className="rb-state">{card.state === 'sending' ? 'SENDING…' : card.state.toUpperCase()}</span> {card.state === 'sent' || card.state === 'sending' ? '' : card.detail}
+              {card.state !== 'sending' && card.state !== 'sent' && (
+                <button className="link" onClick={v.dismissCard}>
+                  dismiss
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+      )}
+
+      {card && !card.quick && (
         <div className={`readback rb-${card.state}`} aria-live="assertive">
           <div className="rb-to">
             To <strong>{card.callsign}</strong>
@@ -59,7 +94,7 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
               <button className="big rb-cancel" onClick={() => v.cancel('Cancelled. Nothing sent.')}>
                 Cancel
               </button>
-              {talking ? <span className="rb-left">Paused while you talk</span> : <Countdown key={card.sendAt} sendAt={card.sendAt} />}
+              {talking ? <span className="rb-left">Paused while you talk</span> : <Countdown key={card.sendAt} sendAt={card.sendAt} total={card.countdownMs} />}
             </div>
           ) : (
             <div className="rb-result">
@@ -143,9 +178,21 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
                     <li key={l}>{l}</li>
                   ))}
                 </ul>
-              ) : (
+              ) : reply.spoken ? null : (
                 reply.say
               )}
+              {reply.spoken && (
+                <div className="spoken">
+                  <span className="spoken-who">{reply.spoken.character}</span> {reply.spoken.text}
+                  {reply.spoken.plain && <span className="muted"> (plain line)</span>}
+                </div>
+              )}
+            </div>
+          )}
+          {lineWaiting && <div className="voice-note muted">{lineWaiting} is answering…</div>}
+          {announced && (
+            <div className="spoken announced">
+              <span className="spoken-who">{announced.character}</span> {announced.text}
             </div>
           )}
           {voiceOutError && !muted && <div className="voice-note">Voice out failed: {voiceOutError}</div>}
@@ -159,17 +206,17 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
 }
 
 /** The seconds left before an armed card sends itself, with a bar that drains. */
-function Countdown({ sendAt }: { sendAt: number }) {
+function Countdown({ sendAt, total, slim }: { sendAt: number; total: number; slim?: boolean }) {
   const [left, setLeft] = useState(() => Math.max(0, sendAt - Date.now()))
   useEffect(() => {
     const t = setInterval(() => setLeft(Math.max(0, sendAt - Date.now())), 100)
     return () => clearInterval(t)
   }, [sendAt])
   return (
-    <span className="rb-count" role="timer" aria-label={`Sends in ${Math.ceil(left / 1000)} seconds`}>
-      <span className="rb-count-n">Sends in {Math.ceil(left / 1000)}</span>
+    <span className={`rb-count${slim ? ' slim' : ''}`} role="timer" aria-label={`Sends in ${Math.ceil(left / 1000)} seconds`}>
+      <span className="rb-count-n">{slim ? Math.ceil(left / 1000) : `Sends in ${Math.ceil(left / 1000)}`}</span>
       <span className="rb-bar">
-        <span className="rb-bar-fill" style={{ transform: `scaleX(${Math.min(1, left / SEND_COUNTDOWN_MS)})` }} />
+        <span className="rb-bar-fill" style={{ transform: `scaleX(${Math.min(1, left / total)})` }} />
       </span>
     </span>
   )

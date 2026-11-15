@@ -2,8 +2,8 @@
 // record of what is known and how old it is, so the page never passes off
 // stale data as a quiet fleet.
 
-import { useEffect, useRef, useState } from 'react'
-import type { BackendStatus, BuildInfo, Fleet, ServerMessage, VoiceStatus } from '../../../shared/protocol.ts'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { BackendStatus, BuildInfo, ClientMessage, Fleet, ServerMessage, SpokenLine, VoiceStatus } from '../../../shared/protocol.ts'
 import { checkToken } from '../pairing.ts'
 
 export type Link = 'connecting' | 'open' | 'down' | 'unauthorized'
@@ -19,9 +19,13 @@ export interface BridgeState {
   downSince: number | null
   build: BuildInfo | null
   voice: VoiceStatus | null
+  /** The last line character mode spoke up with, unprompted. */
+  announce: SpokenLine | null
+  /** Sends to the bridge on the open socket; dropped while it is down, and the next open repeats what matters. */
+  post: (m: ClientMessage) => void
 }
 
-const INITIAL: BridgeState = { link: 'connecting', linkError: null, fleet: null, status: null, heardAt: null, downSince: null, build: null, voice: null }
+const INITIAL: Omit<BridgeState, 'post'> = { link: 'connecting', linkError: null, fleet: null, status: null, heardAt: null, downSince: null, build: null, voice: null, announce: null }
 
 /**
  * The build this page loaded with, as the bridge first named it. In dev
@@ -48,8 +52,16 @@ function checkBuild(b: BuildInfo): void {
 }
 
 export function useBridge(token: string): BridgeState {
-  const [state, setState] = useState<BridgeState>(INITIAL)
+  const [state, setState] = useState<Omit<BridgeState, 'post'>>(INITIAL)
   const retry = useRef(0)
+  const sock = useRef<WebSocket | null>(null)
+  // The last presence sent, repeated on every new connection.
+  const lastPresence = useRef<ClientMessage | null>(null)
+  const post = useCallback((m: ClientMessage) => {
+    if (m.type === 'presence') lastPresence.current = m
+    const ws = sock.current
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m))
+  }, [])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -68,9 +80,11 @@ export function useBridge(token: string): BridgeState {
         schedule()
         return
       }
+      sock.current = ws
       ws.onopen = () => {
         opened = true
         retry.current = 0
+        if (lastPresence.current) ws?.send(JSON.stringify(lastPresence.current))
         setState(s => ({ ...s, link: 'open', linkError: null, downSince: null, heardAt: Date.now() }))
       }
       ws.onmessage = e => {
@@ -90,6 +104,7 @@ export function useBridge(token: string): BridgeState {
           fleet: m.type === 'fleet' ? m.fleet : s.fleet,
           build: m.type === 'hello' || m.type === 'build' ? (m.build ?? null) : s.build,
           voice: m.type === 'hello' || m.type === 'voice' ? (m.voice ?? null) : s.voice,
+          announce: m.type === 'line' ? m.line : s.announce,
         }))
       }
       ws.onclose = async ev => {
@@ -121,7 +136,7 @@ export function useBridge(token: string): BridgeState {
     }
   }, [token])
 
-  return state
+  return useMemo(() => ({ ...state, post }), [state, post])
 }
 
 export function useNow(everyMs = 1000): number {

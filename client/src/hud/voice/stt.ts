@@ -4,7 +4,7 @@
 // same interface: transcribe locally, then post the text to /api/interpret
 // for the parse, so the HUD around it would not change.
 
-import type { Interpretation, VoiceContext, VoiceReply } from '../../../../shared/protocol.ts'
+import type { Interpretation, SpokenLine, VoiceContext, VoiceReply } from '../../../../shared/protocol.ts'
 
 export interface ClientSttProvider {
   readonly name: string
@@ -34,7 +34,7 @@ export function bridgeStt(token: string): ClientSttProvider {
       }
       // Gate refusals (401, 403) carry { error } rather than a transcript.
       if (!body.transcript) return failed(body.error ?? `HTTP ${r.status}`)
-      return { transcript: body.transcript, interpretation: body.interpretation ?? null }
+      return { transcript: body.transcript, interpretation: body.interpretation ?? null, line: body.line ?? null }
     },
   }
 }
@@ -45,4 +45,16 @@ export async function interpretText(token: string, text: string, context: VoiceC
   const body = (await r.json()) as { interpretation?: Interpretation; error?: string }
   if (!body.interpretation) throw new Error(body.error ?? `HTTP ${r.status}`)
   return body.interpretation
+}
+
+/**
+ * Character mode: the spoken line for an answer. The bridge holds the
+ * request until the line is ready or its timeout passes, then answers with
+ * the plain line; this rejects only when the bridge cannot be reached.
+ */
+export async function fetchLine(token: string, id: string): Promise<SpokenLine> {
+  const r = await fetch(`/api/line?id=${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${token}` }, cache: 'no-store' })
+  const body = (await r.json()) as Partial<SpokenLine> & { error?: string }
+  if (!r.ok || typeof body.text !== 'string') throw new Error(body.error ?? `HTTP ${r.status}`)
+  return body as SpokenLine
 }

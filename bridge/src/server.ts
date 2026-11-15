@@ -13,14 +13,16 @@
 //   POST /api/transcribe   a recorded clip -> transcript and what it means
 //   POST /api/interpret    { text, context, focus } -> what it means (no audio)
 //   POST /api/speak   { text } -> WebM/Opus speech
+//   GET  /api/line?id=<id>  character mode: the spoken line for an answer, within the line timeout
 //   GET  /api/voice   speech-to-text and text-to-speech status
-//   WS   /ws          hello, fleet, status, voice and build pushes
+//   WS   /ws          hello, fleet, status, voice, build and line pushes; the HUD sends presence
 //                                                  address check + token + origin
 //
 // Every /api/ route but /api/pair needs the token and a same-origin request.
 // Nothing on the voice routes sends anything: the HUD shows a card with a
 // countdown, and calls /api/send when it ends or on "Send now", unless the
-// person cancels first.
+// person cancels first. Character mode adds words, never actions: its lines
+// are spoken, and a classified command can at most arm the same card.
 
 import { createHash } from 'node:crypto'
 import { unwatchFile, watchFile } from 'node:fs'
@@ -29,7 +31,7 @@ import { createServer, type Server } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { BackendStatus, BuildInfo, Fleet, Interpretation, ServerMessage, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
+import type { BackendStatus, BuildInfo, ClientMessage, Fleet, Interpretation, PendingLine, ServerMessage, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
 import { ipAllowed, normaliseIp, originOk, RateLimiter, tokenMatches, tokenOf, WS_PROTOCOL } from './gate.ts'
 import { SendRefused, UnsupportedError, type SessionBackend } from './backend/types.ts'
 import { relabelFleet, type CallsignOverride } from './backend/callsign.ts'
@@ -37,6 +39,7 @@ import { ClipError, decodeClip, levels, SILENCE_PEAK_DB } from './voice/audio.ts
 import { interpret } from './voice/grammar.ts'
 import { NoStt, SttBusy, SttUnavailable, type SttProvider } from './voice/stt.ts'
 import { NoTts, TtsUnavailable, type TtsProvider } from './voice/tts.ts'
+import type { Persona } from './persona/persona.ts'
 
 export interface BridgeOptions {
   backend: SessionBackend
@@ -62,6 +65,8 @@ export interface BridgeOptions {
   callsigns?: CallsignOverride[]
   /** Tell open HUDs to reload when the built client changes (npm run dev). */
   devReload?: boolean
+  /** Character mode. Absent, or with no character selected, the bridge answers exactly as in operator mode. */
+  persona?: Persona
 }
 
 export interface Bridge {
@@ -176,7 +181,8 @@ export function createBridge(o: BridgeOptions): Bridge {
   const clipMaxBytes = o.clipMaxBytes ?? 2_000_000
   const overrides = o.callsigns ?? []
   let heardAs = new Map<string, string[]>()
-  const voice = (): VoiceStatus => ({ stt: stt.status(), tts: tts.status() })
+  const persona = o.persona ?? null
+  const voice = (): VoiceStatus => ({ stt: stt.status(), tts: tts.status(), ...(persona ? { persona: persona.status() } : {}) })
   let build: BuildInfo = { id: null, reload: !!o.devReload }
 
   const refuseIp = (ip: string) => {
@@ -249,9 +255,11 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (path === '/api/interpret' && req.method === 'POST') {
       const body = asObject(await readBody(req, JSON_MAX))
       if (typeof body.text !== 'string' || body.text.length > TEXT_MAX) return sendJson(res, 400, { error: `text: the words to interpret, at most ${TEXT_MAX} characters` })
-      return sendJson(res, 200, { interpretation: meaning(body.text, contextOf(body.context), focusOf(body.focus)) })
+      const m = await meaning(body.text, contextOf(body.context), focusOf(body.focus))
+      return sendJson(res, 200, { interpretation: m.interpretation, ...(m.line ? { line: m.line } : {}) })
     }
     if (path === '/api/speak' && req.method === 'POST') return speakRoute(req, res)
+    if (path === '/api/line' && req.method === 'GET') return lineRoute(req, res)
     return sendJson(res, 404, { error: 'no such route' })
   }
 
@@ -326,24 +334,54 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (!text.trim()) return fail(422, { reason: 'no-words', error: `heard sound (loudest ${lv.peakDb} dBFS) but no words in it`, audioMs, peakDb: lv.peakDb })
     const url = new URL(req.url ?? '/', 'https://bridge')
     const transcript: Transcript = { ok: true, text: text.trim(), provider: stt.name, audioMs, sttMs, totalMs: Date.now() - t0 }
-    const interpretation = meaning(transcript.text, contextOf(url.searchParams.get('context')), focusOf(url.searchParams.get('focus')))
-    log(`stt: ${ip}: ${audioMs} ms clip, ${sttMs} ms model, ${transcript.totalMs} ms total -> ${interpretation.kind}`)
-    const reply: VoiceReply = { transcript, interpretation }
+    const m = await meaning(transcript.text, contextOf(url.searchParams.get('context')), focusOf(url.searchParams.get('focus')))
+    log(`stt: ${ip}: ${audioMs} ms clip, ${sttMs} ms model, ${Date.now() - t0} ms total -> ${m.interpretation.kind}${m.line ? ' (line to follow)' : ''}`)
+    const reply: VoiceReply = { transcript, interpretation: m.interpretation, ...(m.line ? { line: m.line } : {}) }
     return sendJson(res, 200, reply)
   }
 
-  /** The grammar's reading of the words. "voice X" is acted on here, so the reply is already spoken in the new voice. */
-  function meaning(text: string, context: VoiceContext, focusId: string | null): Interpretation {
-    const i = interpret({ transcript: text, fleet: lastFleet, heardAs, context, focusId, voices: tts.voices?.() ?? [], voice: tts.voice?.() ?? null, now: Date.now() })
-    if (i.kind !== 'voice' || !i.voice) return i
+  /**
+   * The grammar's reading of the words. "voice X" and "be X" are acted on
+   * here, so the reply is already spoken in the new voice. In character mode
+   * speech the grammar could not place is classified (bounded by the
+   * classify timeout), and a line is started; nobody waits for the line.
+   */
+  async function meaning(text: string, context: VoiceContext, focusId: string | null): Promise<{ interpretation: Interpretation; line: PendingLine | null }> {
+    persona?.heardVoice()
+    const characters = persona ? persona.characters().map(c => ({ name: c.name, heardAs: c.heardAs })) : []
+    let i = interpret({ transcript: text, fleet: lastFleet, heardAs, context, focusId, voices: tts.voices?.() ?? [], voice: tts.voice?.() ?? null, characters, character: persona?.current()?.name ?? null, now: Date.now() })
+    if (i.kind === 'voice' && i.voice) i = changeVoice(i.voice, i)
+    if (i.kind === 'character' && i.changed && persona) {
+      try {
+        persona.select(i.character)
+      } catch (err) {
+        log('persona: could not change character:', (err as Error).message)
+        i = { kind: 'character', character: persona.current()?.name ?? null, changed: false, say: `Could not change character: ${(err as Error).message}.` }
+      }
+    }
+    if (!persona?.current()) return { interpretation: i, line: null }
+    i = await persona.classify(text, i, () => lastFleet, Date.now)
+    return { interpretation: i, line: persona.startLine(i, text, () => lastFleet) }
+  }
+
+  function changeVoice(name: string, i: Interpretation): Interpretation {
     try {
       if (!tts.select) throw new Error('this text-to-speech provider has one voice')
-      tts.select(i.voice)
+      tts.select(name)
       return i
     } catch (err) {
       log('tts: could not change voice:', (err as Error).message)
       return { kind: 'voice', voice: null, say: `Could not change voice: ${(err as Error).message}.` }
     }
+  }
+
+  /** GET /api/line?id=<id>: the character's line for an answer, or the plain one once the line timeout has passed. */
+  async function lineRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const id = new URL(req.url ?? '/', 'https://bridge').searchParams.get('id') ?? ''
+    if (!/^[0-9a-f]{16}$/.test(id)) return sendJson(res, 400, { error: 'id: the line id from the voice reply' })
+    const line = persona?.line(id)
+    if (!line) return sendJson(res, 404, { error: 'no such line, or it is over a minute old' })
+    return sendJson(res, 200, await line)
   }
 
   async function speakRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -444,9 +482,12 @@ export function createBridge(o: BridgeOptions): Bridge {
     wss.handleUpgrade(req, socket, head, ws => {
       log(`ws: ${ip} connected (${wss.clients.size} open)`)
       alive.set(ws, true)
+      // Muted until the HUD says otherwise, so a page that never reports is never spoken to unprompted.
+      presence.set(ws, { muted: true, holding: false })
       ws.on('pong', () => alive.set(ws, true))
       ws.on('error', err => log(`ws: ${ip}:`, err.message))
       ws.on('close', () => log(`ws: ${ip} left (${wss.clients.size} open)`))
+      ws.on('message', data => onClientMessage(ws, ip, data))
       push(ws, { type: 'hello', status, build, voice: voice() })
       if (lastFleet) push(ws, { type: 'fleet', fleet: lastFleet, status })
     })
@@ -465,6 +506,24 @@ export function createBridge(o: BridgeOptions): Bridge {
     }
   }, 15_000)
 
+  const presence = new WeakMap<WebSocket, { muted: boolean; holding: boolean }>()
+  function onClientMessage(ws: WebSocket, ip: string, data: unknown): void {
+    let m: ClientMessage
+    try {
+      m = JSON.parse(String(data)) as ClientMessage
+    } catch (err) {
+      log(`ws: ${ip}: unreadable message: ${(err as Error).message}`)
+      return
+    }
+    if (m?.type === 'presence' && typeof m.muted === 'boolean' && typeof m.holding === 'boolean') presence.set(ws, { muted: m.muted, holding: m.holding })
+    else log(`ws: ${ip}: unknown message type ${JSON.stringify((m as { type?: unknown })?.type ?? null).slice(0, 40)}`)
+  }
+  const listeners = () => [...wss.clients].filter(ws => ws.readyState === ws.OPEN && presence.get(ws)?.muted === false)
+  const audience = () => {
+    const ls = listeners()
+    return { listening: ls.length > 0, holding: ls.some(ws => presence.get(ws)?.holding) }
+  }
+
   function push(ws: WebSocket, m: ServerMessage): void {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m))
   }
@@ -477,7 +536,9 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (u.ok) {
       // The bridge has the last word on callsigns, whatever the adapter chose.
       const r = relabelFleet(u.fleet, overrides)
+      const prev = lastFleet
       lastFleet = r.fleet
+      persona?.fleetChanged(prev, lastFleet)
       heardAs = r.heardAs
       status = { ...status, ok: true, error: null, lastOkAt: Date.now() }
       broadcast({ type: 'fleet', fleet: lastFleet, status })
@@ -488,6 +549,15 @@ export function createBridge(o: BridgeOptions): Bridge {
   })
 
   const unVoice = stt.onStatus(() => broadcast({ type: 'voice', voice: voice(), status }))
+  const unPersona = persona?.onStatus(() => broadcast({ type: 'voice', voice: voice(), status })) ?? (() => {})
+  // Unprompted lines go only to HUDs that are listening. They are spoken there and never acted on.
+  persona?.setAudience(audience)
+  const unAnnounce =
+    persona?.onAnnounce(line => {
+      const to = listeners()
+      log(`persona: speaking up to ${to.length} HUD${to.length === 1 ? '' : 's'}: ${line.source}`)
+      for (const ws of to) push(ws, { type: 'line', line, status })
+    }) ?? (() => {})
 
   // ---------------------------------------------------------------- build
   // The build id is a hash of the built index.html, which names every hashed
@@ -517,6 +587,8 @@ export function createBridge(o: BridgeOptions): Bridge {
     close: async () => {
       unsubscribe()
       unVoice()
+      unPersona()
+      unAnnounce()
       if (o.devReload) unwatchFile(indexHtml)
       clearInterval(heartbeat)
       for (const ws of wss.clients) ws.terminate()

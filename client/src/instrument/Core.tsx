@@ -12,7 +12,7 @@ import { BufferAttribute, CircleGeometry, Matrix4, Quaternion, Vector3, type Buf
 import type { Figure, LimitWindow, Usage } from '../../../shared/protocol.ts'
 import { until } from '../hud/Usage.tsx'
 import { age } from '../hud/useBridge.ts'
-import { SEND_COUNTDOWN_MS, type Voice } from '../hud/voice/useVoice.ts'
+import type { Voice } from '../hud/voice/useVoice.ts'
 import { clock, second } from './clock.ts'
 import { CORE_Y } from './layout.ts'
 import { useBatch, useLines, type ShapeBuilder } from './linework.tsx'
@@ -20,7 +20,7 @@ import { arcGeometry, arcsGeometry, ticksGeometry, useGeometry } from './shapes.
 import { settings } from './settings.ts'
 import { RADIUS, STREAM_HEIGHT_M } from './Stream.tsx'
 import { fit } from './text.ts'
-import { C, DEG, FONTS, levelColour, rgba } from './theme.ts'
+import { C, DEG, FONTS, levelColour, rgba, shade } from './theme.ts'
 
 /** The Stream's centre, in the rig's frame (the eye at the origin, looking down -Z). */
 export { CORE_Y }
@@ -68,28 +68,34 @@ export function placed(b: ShapeBuilder, pos: [number, number, number], yawY = 0,
 const OUTER_SPIN = deg(1.5)
 const INNER_SPIN = -deg(2.5)
 
-export const Rings = memo(function Rings() {
+/**
+ * The Core's rings, in the character's accent while one is selected (cyan
+ * otherwise). The batch converts each hex from sRGB when the shape is
+ * built, so a new accent costs one rebuild of this shape and nothing per frame.
+ */
+export const Rings = memo(function Rings({ accent = C.cyan }: { accent?: string }) {
   const batch = useBatch()
   useLayoutEffect(() => batch.setPivot(0, CORE_Y), [batch])
+  const dim = accent === C.cyan ? C.cyanDim : shade(accent, 0.48)
   useLines(
     'rings',
     b => {
       b.m = placed(b, [0, CORE_Y, RING_Z - 0.03])
       b.spin = OUTER_SPIN
       // Decorative, further back for stereo depth: a full ring with ticks.
-      arc(b, { r: 0.66, width: 0.0035, from: 0, to: Math.PI * 2, colour: C.cyanDim, glow: false })
-      b.add('line', ticksGeometry(0.645, 0.014, 0.0035, 72), C.cyanDim)
-      b.add('line', ticksGeometry(0.64, 0.026, 0.005, 8), C.cyan)
+      arc(b, { r: 0.66, width: 0.0035, from: 0, to: Math.PI * 2, colour: dim, glow: false })
+      b.add('line', ticksGeometry(0.645, 0.014, 0.0035, 72), dim)
+      b.add('line', ticksGeometry(0.64, 0.026, 0.005, 8), accent)
       b.m = placed(b, [0, CORE_Y, RING_Z - 0.015])
       b.spin = INNER_SPIN
-      for (let i = 0; i < 4; i++) arc(b, { r: 0.575, width: 0.004, from: deg(i * 90 + 12), to: deg(i * 90 + 62), colour: C.cyanDim, glow: false })
+      for (let i = 0; i < 4; i++) arc(b, { r: 0.575, width: 0.004, from: deg(i * 90 + 12), to: deg(i * 90 + 62), colour: dim, glow: false })
       // The two arcs of the Core proper, still.
       b.spin = 0
       b.m = placed(b, [0, CORE_Y, RING_Z])
-      arc(b, { r: RING_R, width: 0.005, from: deg(36), to: deg(144), colour: C.cyan })
-      arc(b, { r: RING_R, width: 0.004, from: deg(206), to: deg(334), colour: C.cyanDim, glow: false })
+      arc(b, { r: RING_R, width: 0.005, from: deg(36), to: deg(144), colour: accent })
+      arc(b, { r: RING_R, width: 0.004, from: deg(206), to: deg(334), colour: dim, glow: false })
     },
-    [],
+    [accent, dim],
   )
   return null
 })
@@ -226,6 +232,12 @@ export function sameVoice(a: Voice, b: Voice): boolean {
     a.sttProblem === b.sttProblem &&
     a.ttsProblem === b.ttsProblem &&
     a.sttLoading === b.sttLoading &&
+    a.character?.name === b.character?.name &&
+    a.character?.accent === b.character?.accent &&
+    a.character?.confirm === b.character?.confirm &&
+    a.lineWaiting === b.lineWaiting &&
+    a.announced === b.announced &&
+    a.frontManProblem === b.frontManProblem &&
     a.recorder === b.recorder &&
     a.speaker === b.speaker
   )
@@ -269,6 +281,11 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
   const vRef = useRef(voice)
   vRef.current = voice
   const flash = useRef<{ colour: [number, number, number]; until: number } | null>(null)
+  // The resting centre takes the character's accent, squared to linear like the rest.
+  const accent = voice.character?.accent ?? null
+  const idle = useMemo(() => (accent ? rgb(shade(accent, 0.48)) : IDLE), [accent])
+  const idleRef = useRef(idle)
+  idleRef.current = idle
   const lastCard = useRef<string | null>(null)
   useEffect(() => {
     const c = voice.card
@@ -288,7 +305,7 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
     const card = v.card
     for (let i = 0; i < CELLS; i++) {
       const d = Math.abs(i - mid) / mid // 0 centre .. 1 ends
-      let c: [number, number, number] = d < 0.15 ? IDLE : DIM
+      let c: [number, number, number] = d < 0.15 ? idleRef.current : DIM
       if (v.phase.kind === 'recording') {
         const lit = level.current
         c = d <= lit ? (d < lit * 0.5 ? MIC_HOT : MIC) : DIM
@@ -296,7 +313,7 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
         const sweep = (Math.sin(now / 160) + 1) / 2
         c = Math.abs(i / (CELLS - 1) - sweep) < 0.06 ? AMBER : DIM
       } else if (card?.state === 'armed') {
-        const left = Math.max(0, Math.min(1, (card.sendAt - Date.now()) / SEND_COUNTDOWN_MS))
+        const left = Math.max(0, Math.min(1, (card.sendAt - Date.now()) / card.countdownMs))
         c = d <= left ? AMBER : DIM
       } else if (card?.state === 'sending') {
         c = Math.sin(now / 90) > 0 ? AMBER : DIM
@@ -390,7 +407,8 @@ export const Iris = memo(function Iris({ name, sub, colour, recording, level, ha
 
 /** What was heard and what it meant, one or two lines between the Stream and the iris. */
 export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
-  const { heard, reply, phase, sttProblem, ttsProblem, voiceOutError, muted } = voice
+  const { heard, reply, phase, sttProblem, ttsProblem, voiceOutError, muted, frontManProblem, lineWaiting, announced } = voice
+  const accent = voice.character?.accent ?? C.cyan
   const line = phase.kind === 'failed' && heard?.ok !== false ? { c: C.red, t: `${phase.title}: ${phase.detail}` } : phase.kind === 'idle' && phase.note ? { c: C.amber, t: phase.note } : null
   return (
     <group position={[0, CORE_Y - STREAM_HEIGHT_M / 2 - 0.075, -RADIUS + 0.01]}>
@@ -398,6 +416,11 @@ export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
         {(sttProblem || ttsProblem) && (
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={18} color={voice.sttLoading ? C.amber : C.red} textAlign="center">
             {fit([sttProblem, ttsProblem].filter(Boolean).join('  ·  '))}
+          </Text>
+        )}
+        {frontManProblem && (
+          <Text fontFamily="inter" fontWeight="semi-bold" fontSize={16} color={C.amber} textAlign="center">
+            {fit(clip(frontManProblem, 120))}
           </Text>
         )}
         <Text fontFamily="inter" fontSize={19} color={heard === null ? C.muted : heard.ok ? C.white : C.red} textAlign="center">
@@ -409,8 +432,18 @@ export const HeardLine = memo(function HeardLine({ voice }: { voice: Voice }) {
           </Text>
         )}
         {reply && !line && (
-          <Text fontFamily="inter" fontSize={17} color={C.cyan} textAlign="center">
-            {fit(clip(reply.lines ? reply.lines.join(' ') : reply.say, 160))}
+          <Text fontFamily="inter" fontSize={17} color={accent} textAlign="center">
+            {fit(clip(reply.spoken && !reply.lines ? `${reply.spoken.character.toUpperCase()}: ${reply.spoken.text}` : reply.lines ? reply.lines.join(' ') : reply.say, 160))}
+          </Text>
+        )}
+        {lineWaiting && !line && (
+          <Text fontFamily="inter" fontSize={15} color={C.muted} textAlign="center">
+            {fit(`${lineWaiting.toUpperCase()} IS ANSWERING…`)}
+          </Text>
+        )}
+        {announced && !lineWaiting && (
+          <Text fontFamily="inter" fontSize={15} color={accent} textAlign="center">
+            {fit(clip(`${announced.character.toUpperCase()}: ${announced.text}`, 160))}
           </Text>
         )}
         {voiceOutError && !muted && (
@@ -480,6 +513,36 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   const c = card!
   const armed = c.state === 'armed'
   const border = c.state === 'sent' ? C.green : c.state === 'refused' || c.state === 'limited' ? C.red : c.state === 'cancelled' ? C.muted : C.amber
+  if (c.quick) {
+    // Character mode's quick send: one slim line, still cancellable by button or by voice.
+    return (
+      <group position={[0, CORE_Y - 0.17, z]}>
+        <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="row" alignItems="center" gap={12} width={760} paddingX={14} paddingY={8} borderRadius={8} borderWidth={2} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
+          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={voice.character?.accent ?? C.cyan}>
+            {fit(`TO ${c.callsign.toUpperCase()}`, 'rajdhani-700')}
+          </Text>
+          <Text fontFamily="inter" fontWeight="semi-bold" fontSize={19} color={C.white} flexShrink={1} flexGrow={1}>
+            {fit(clip(c.text, 90))}
+          </Text>
+          {armed ? (
+            <>
+              <Text fontFamily="rajdhani" fontWeight="bold" fontSize={22} color={C.amber}>
+                {countdown}
+              </Text>
+              <Button label="CANCEL" colour={C.red} onClick={() => voiceRef.current.cancel('Cancelled. Nothing sent.')} width={140} />
+            </>
+          ) : (
+            <>
+              <Text fontFamily="rajdhani" fontWeight="bold" fontSize={22} color={border}>
+                {c.state === 'sending' ? 'SENDING…' : c.state.toUpperCase()}
+              </Text>
+              {c.state !== 'sending' && c.state !== 'sent' && <Button label="DISMISS" colour={C.muted} onClick={() => voiceRef.current.dismissCard()} width={130} />}
+            </>
+          )}
+        </Container>
+      </group>
+    )
+  }
   return (
     <group position={[0, CORE_Y - 0.1, z]}>
       <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>

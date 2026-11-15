@@ -53,6 +53,14 @@ const SHOW_TIMEOUT_MS = 8_000
 export const TURN_MAX = 12_000
 export const TURNS_MAX = 20
 
+/**
+ * A thread id goes on the command line, so it must not start like a flag and
+ * must hold nothing odd. T3 has more shapes than a bare UUID: a thread made
+ * through its MCP tools is "mcp:<uuid>", and a delegated task's id carries
+ * colons and percent signs.
+ */
+export const THREAD_ID = /^[0-9A-Za-z][\w:.%-]{0,199}$/
+
 export class DashwebAdapter implements SessionBackend {
   readonly name = 'dashweb'
   readonly capabilities = capabilities(['list', 'subscribe', 'send', 'pending', 'transcript'])
@@ -95,7 +103,7 @@ export class DashwebAdapter implements SessionBackend {
     // The office only feeds usage figures: failing, they read as unavailable.
     const asError = (err: unknown) => (err instanceof Error ? err : new Error(String(err)))
     const [board, t3, office] = await Promise.all([this.getJson('/api/board'), this.getJson('/api/t3').catch(asError), this.getJson('/api/state/office').catch(asError)])
-    const { fleet, routes } = normalise(board, t3, Date.now(), { office, spend: this.stream.spend() })
+    const { fleet, routes } = normalise(board, t3, Date.now(), { office, spend: this.stream.spend(), hideCwds: this.cfg.hideCwds })
     this.routes = routes
     return fleet
   }
@@ -121,7 +129,7 @@ export class DashwebAdapter implements SessionBackend {
     const threadId = this.routes.get(id)
     if (!threadId) throw new SendRefused(`no T3 thread to send to for session ${id.slice(0, 40)}`)
     // The thread id goes on the command line; one that looked like a flag would be read as one.
-    if (!/^[0-9A-Za-z][\w-]{0,127}$/.test(threadId)) throw new SendRefused('thread id is not one the CLI can take', 400)
+    if (!THREAD_ID.test(threadId)) throw new SendRefused('thread id is not one the CLI can take', 400)
     const said = await this.run(this.cfg.t3Bin, ['thread', 'send', '--base-dir', this.cfg.t3BaseDir, threadId, '-'], text, SEND_TIMEOUT_MS)
     this.log('sent', text.length, 'chars to thread', threadId)
     return { ok: true, said: said.trim().slice(0, 500) }
@@ -135,7 +143,7 @@ export class DashwebAdapter implements SessionBackend {
   async transcript(id: string, limit: number): Promise<SessionTranscript> {
     const threadId = this.routes.get(id)
     if (!threadId) throw new SendRefused(`no T3 thread behind session ${id.slice(0, 40)}, so no full transcript`)
-    if (!/^[0-9A-Za-z][\w-]{0,127}$/.test(threadId)) throw new SendRefused('thread id is not one the CLI can take', 400)
+    if (!THREAD_ID.test(threadId)) throw new SendRefused('thread id is not one the CLI can take', 400)
     const n = Math.min(TURNS_MAX, Math.max(1, Math.floor(limit) || 1))
     const out = await this.run(this.cfg.t3Bin, ['thread', 'show', '--base-dir', this.cfg.t3BaseDir, '--json', '--messages', String(n), threadId], '', SHOW_TIMEOUT_MS)
     let parsed: unknown

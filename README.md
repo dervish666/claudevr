@@ -49,6 +49,11 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `tts.fish.model`, `tts.fish.voices` | `CLAUDEVR_FISH_MODEL` | `s2.1-pro`; voices required for `fish` |
 | fish.audio API key | `FISH_API_KEY` | the one line in `.local/fish-api-key` |
 | `callsigns` | | none |
+| `characters` | | none: operator mode only |
+| `character` (the one to start with) | `CLAUDEVR_CHARACTER` | none; a choice made by voice, kept in `.local/character`, wins |
+| `frontMan.provider` | `CLAUDEVR_FRONTMAN` | `cli`; or `off` (every line is the plain one) |
+| `frontMan.bin`, `frontMan.model` | `CLAUDEVR_CLAUDE_BIN`, `CLAUDEVR_FRONTMAN_MODEL` | `claude` on the PATH, `haiku` |
+| `frontMan.lineTimeoutMs`, `classifyTimeoutMs`, `announceGapMs` | | 4000, 3000, 20000 |
 | `ffmpeg` | `CLAUDEVR_FFMPEG` | `ffmpeg` on the PATH |
 | client build to serve | `CLAUDEVR_CLIENT_DIR` | `client/dist` (`npm run dev` builds there too) |
 | fake backend's fleet | `CLAUDEVR_FAKE_FLEET` | `demo-fleet.json`, a file name inside `fixtures/` |
@@ -78,6 +83,11 @@ Hold the big button (or Space on a desktop) and speak; release to finish. The br
 | `send`, `yes` / `cancel`, `no` | confirm or cancel the armed card |
 | `voice X`, `change voice to X`, `use the X voice` | changes the speaking voice (fish.audio only), and answers in it |
 | `voices` | lists the voices and names the current one |
+| `be X`, `character X`, `X mode` | turns on character X, and its voice (see Character mode) |
+| `operator mode`, `plain mode`, `drop the character` | back to plain replies and the 5 s card |
+| `characters` | lists the characters and names the current one |
+| `<character>, ...` (the current character's name first) | a command after the name still runs; anything else is a question the character answers aloud from the fleet facts, sent to no session |
+| `belay that`, `stop` | cancel the armed card, as `cancel` does |
 
 Callsigns match by spelling and by sound. A weak match, or two near-equal ones, asks which instead of guessing. No callsign starts with a command word. A transcript never sends on its own: the card shows on screen, not spoken, and counts down 5 s, then sends itself. Send now (button, Enter, or "send" on the next hold) skips the wait; Cancel (button, or "cancel" on the next hold) stops it; holding to talk pauses the countdown. A sent or cancelled card clears itself after 2.5 s; one that was refused or rate limited stays until dismissed. The parse lives in the bridge (`bridge/src/voice/grammar.ts`), next to the fleet and the private callsign config; a speech-to-text provider in the browser would post its text to `/api/interpret` and get the same parse.
 
@@ -92,6 +102,32 @@ Replies are spoken by the bridge, fetched with the token and played from a `blob
 A voice chosen by speech is kept in `.local/tts-voice` and wins over `tts.voice` on the next start. Each phrase is cached per voice, so "Sent to X." is bought once. When fish.audio fails (no key, no credit, no network) the bridge logs why, speaks with `say` on macOS, and the HUD's voice status carries the reason. The HUD has a mute button. Session text is untrusted: it reaches `say` on stdin, capped, with `[[...]]` commands stripped.
 
 Under `npm run dev` the bridge watches the built `index.html` and pushes a new build id on the WebSocket; an open HUD reloads itself when it sees one.
+
+## Character mode
+
+Operator mode is everything above: plain replies, the 5 s card. Character mode puts a character between him and the fleet. Same commands, same actions, same card; what changes is who talks back. A character is configured, never built in:
+
+```json
+"characters": { "bosun": { "voice": "atlas", "prompt": "You are the Bosun ...", "confirm": "quick", "heardAs": ["boatswain"], "accent": "#f5a524" } }
+```
+
+`config.example.json` ships one, the Bosun. `voice` must be one of `tts.fish.voices` when the provider is fish (with `say` the character speaks in the one `say` voice). `confirm` is `card` (the 5 s card) or `quick` (see below). `accent` is a `#rrggbb` colour the HUD picks up while the character is on. Characters you write for yourself belong in `.local/config.json`, which git ignores. Turning one on by voice ("be bosun") changes the voice to it and is remembered across restarts in `.local/character`; "operator mode" writes it empty.
+
+**The front man.** The character lives in a model inside the bridge, never in the sessions: nothing about a character is put in a session's prompt or sent to a session, and a session gets your words as you said them. The model is a long-lived `claude -p` child on your Claude subscription (no API key), with no tools, no MCP servers, none of your user settings or hooks, no saved session, run in an empty directory under `.local/frontman/`, with every `CLAUDE_CODE*` variable removed. It starts when a character is turned on and stops in operator mode. When it dies it restarts with backoff (1 s up to 60 s); after 16 turns, or once its context passes 14,000 tokens, it is replaced, so its context stays small. Its stderr goes to the bridge log, and its state (starting, ready, unavailable and why) shows on the HUD. `bridge/src/persona/frontman.ts` has the `FrontMan` interface, so an API client can replace the CLI.
+
+**Lines.** In character mode the bridge acts at once, exactly as in operator mode, and answers the HUD with a line id; the HUD plays a short double tone so you know you were heard, and fetches the line from `GET /api/line`. The bridge gives the model the facts (what you said, what was done, the plain line, and a compact fleet snapshot: who is working, failed or asking and for how long, the usage limits, any context at 80% or more) and the character says it in a sentence or two, pushing back on the real facts. If the line is not ready in 4 s, or the model is down, or what it wrote is not speakable, the plain line is spoken instead and the log says why. Measured on Haiku with the CLI: the line is ready 1.5 to 2 s after the request (median 1.6 s over 15 turns), 2.8 s for the first line after turning a character on. A sent message gets a tone, not "Sent to X.", since the character has already spoken about it; refusals and rate limits are still spoken plainly. A message for a session gets no line at all: the countdown on screen is the read-back, and the character does not remark on everything you send.
+
+**Free-form commands.** When the grammar answers `unknown` or "which one?", the bridge asks a second front man (a separate conversation with a plain classifier prompt) which command you meant: status, limits, read X, switch to X, tell X, or none. It waits at most 3 s, then keeps the grammar's answer. The output is untrusted: it must be a JSON object naming one of the listed kinds, its session must still be in the fleet, `tell` needs a session that can be sent to and a message the grammar already took from your words (the model never writes what is sent), and an ambiguous name may only resolve to one of the grammar's own candidates. Anything else falls back to the grammar.
+
+**Quick confirm.** A character with `confirm: "quick"` arms a 2 s countdown, shown as a slim line instead of the card, cancellable by its button or by "cancel", "belay that" or "stop". It never sends with no delay: speech-to-text mishears, the sessions have full access to the machine, and a sent message cannot be recalled. The send rate limits are the same.
+
+**Speaking up.** In character mode the character says, in its own words, when a session starts asking, fails or finishes a turn, and may read out a short version of what it said. At most one unprompted line every 20 s; events in between are gathered into the next one. The HUD tells the bridge over the WebSocket whether it is muted and whether you are holding to talk: nothing is generated for a muted HUD or no HUD, nothing is spoken while you hold to talk or while a reply is playing, and a line held back for 15 s is dropped.
+
+**Safety.** Character mode adds words, never actions. Only `POST /api/send` sends, and only when the card's countdown ends or you press Send; nothing under `bridge/src/persona/` can reach the backend (a test checks that). Session text is untrusted: it can appear in a line's prompt, and a line is only ever spoken, never parsed. The classifier, whose output is parsed, sees your words and the sessions' callsigns, kinds and states, never anything a session wrote, and the most it can do is arm the same card the grammar would have. `bridge/test/persona.test.ts` runs a fleet full of prompt injections against a model that answers every turn with an injection, and checks that nothing is sent.
+
+**What leaves the machine.** In character mode your transcripts, the plain lines and the fleet snapshots (callsigns, states, waiting questions and, for lines, what sessions said) go to Anthropic through the `claude` CLI on your subscription, on top of the spoken text that goes to fish.audio when that provider is on. Operator mode sends nothing to the front man.
+
+**On the HUD.** The 2D page shows the character, its confirm mode and any front man trouble above the voice row, the line once spoken, and takes the accent for its `--accent` colour. Instrument mode takes the accent for the Core's rings, the dispatcher's iris and the resting voice arc, shows the line under the Stream, and draws a quick send as a slim bar. The tiles, rail, gauges and cards keep their own colours.
 
 ## Limits and context
 
@@ -121,13 +157,13 @@ Draw calls are kept down by batching: every ring, bracket, gauge and tether is o
 
 The bridge listens on the LAN and its send path reaches agents with full access to the machine. Every request must come from loopback or an address in `allowIps`. Every API call and WebSocket must also carry the pairing token (`Authorization: Bearer`, or a `token.<t>` WebSocket subprotocol), and a request from another origin is refused. Sends share one rate limit. The token is made on first run in `.local/pairing-token`; delete the file to make a new one.
 
-The voice routes (`/api/transcribe`, `/api/interpret`, `/api/speak`, `/api/voice`) sit behind the same gate. None of them sends anything; only `POST /api/send` does.
+The voice routes (`/api/transcribe`, `/api/interpret`, `/api/speak`, `/api/voice`, `/api/line`) sit behind the same gate. None of them sends anything; only `POST /api/send` does.
 
 Typing 32 hex characters on a headset keyboard is miserable, so `autoPair: true` makes the bridge hand the token to any allowed address that asks (`POST /api/pair`), and the pages pair themselves on first load. The cost: with it on, the allow list is the only gate, so whoever holds an allowed IP can send. Keep it for a LAN you trust, and leave it off anywhere else.
 
 ## Layout
 
-- `bridge/` HTTPS server, gate, certificate, backends (`backend/dashweb`: the board normaliser, `usage.ts` for limits and context, `stream.ts` for the live spend; `backend/fake.ts`), voice (`src/voice/`: grammar, ffmpeg decode, speech-to-text and text-to-speech providers; `stt/helper.py`)
+- `bridge/` HTTPS server, gate, certificate, backends (`backend/dashweb`: the board normaliser, `usage.ts` for limits and context, `stream.ts` for the live spend; `backend/fake.ts`), voice (`src/voice/`: grammar, ffmpeg decode, speech-to-text and text-to-speech providers; `stt/helper.py`), character mode (`src/persona/`: `frontman.ts` the provider, `prompt.ts` the prompts and the validation, `persona.ts` lines, classification and speaking up)
 - `client/` Vite and React: the HUD (`/`) with its voice dock (`src/hud/Voice.tsx`, `src/hud/voice/`), instrument mode (`src/instrument/`: `layout.ts` and `cards.ts` pure, `linework.tsx` the batch), and the headset probe (`/probe`)
 - `shared/protocol.ts` the normalised session shape, the usage figures and the WebSocket messages
 - `fixtures/` a scrubbed dashweb capture for tests, and demo fleets for the fake backend (`demo-fleet.json`, and `demo-fleet-10.json` with ten sessions and five needs)

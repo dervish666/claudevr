@@ -1,6 +1,7 @@
-// The spike-controls panel: low, to the right, tilted up like a desk strip,
-// with big labelled buttons. Sam operates it without a manual, so every
-// toggle names itself and shows which option is on.
+// The settings panel: low, to the right, tilted up like a desk strip, with
+// big labelled buttons. Sam operates it without a manual, so every toggle
+// names itself and shows which option is on. MINIMISE folds it to a strip
+// that keeps only the way back and the way out.
 
 import { memo } from 'react'
 import { Container, Text } from '@react-three/uikit'
@@ -87,17 +88,55 @@ export interface ControlsProps {
 
 /** Memoised: the callbacks it is handed are stable, so it renders again only when a toggle or the stream note changes. */
 export const Controls = memo(function Controls({ streamNote, perf, mic, preview, onRecenter, onFakeNeed, onExit }: ControlsProps) {
+  const minimised = useSettings().minimised
+  const fold = (to: boolean) => {
+    setSetting('minimised', to)
+    log('toggle', { minimised: to })
+  }
+  // Folded: a strip where the panel's top edge was. The two forms are separate
+  // roots (the key), because uikit leaves stray text behind when children come
+  // and go inside a root that stays alive.
+  if (minimised) {
+    return (
+      <group position={[0.5, -0.5, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
+        <Container key="folded" pixelSize={MM} fontFamilies={FONTS} flexDirection="row" gap={8} width={330} padding={10} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
+          <Action label="SETTINGS" colour={C.cyan} onClick={() => fold(false)} />
+          <Action label={preview ? 'BACK TO 2D' : 'EXIT'} colour={C.red} onClick={onExit} />
+        </Container>
+      </group>
+    )
+  }
   // y is low enough to clear the bottom tile row's age line on the right wing.
   return (
     <group position={[0.5, -0.66, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
-      <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={8} width={560} padding={16} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
-        <Container flexDirection="row" alignItems="baseline" gap={10}>
+      <Container key="open" pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={8} width={560} padding={16} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
+        <Container flexDirection="row" alignItems="center" gap={10}>
           <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={C.cyan}>
-            SPIKE CONTROLS
+            SETTINGS
           </Text>
-          <Text fontFamily="inter" fontSize={15} color={C.muted} flexShrink={1}>
+          <Text fontFamily="inter" fontSize={15} color={C.muted} flexShrink={1} flexGrow={1}>
             {streamNote}
           </Text>
+          <Container
+            height={40}
+            paddingX={14}
+            borderRadius={8}
+            borderWidth={3}
+            borderColor={C.cyanFaint}
+            backgroundColor={rgba(8, 12, 15, 0.95)}
+            hover={{ borderColor: C.white }}
+            justifyContent="center"
+            alignItems="center"
+            flexShrink={0}
+            onClick={e => {
+              e.stopPropagation()
+              fold(true)
+            }}
+          >
+            <Text fontFamily="rajdhani" fontWeight="bold" fontSize={20} color={C.muted}>
+              MINIMISE
+            </Text>
+          </Container>
         </Container>
         <Row title="STREAM">
           <Option k="stream" value="layer" label="LAYER" />

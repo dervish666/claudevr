@@ -205,3 +205,25 @@ test('usage: an unreadable office leaves the fleet up and every usage figure una
   assert.match(fleet.usage.limits.note ?? '', /HTTP 503/)
   assert.ok(fleet.sessions.every(s => s.context === null))
 })
+
+test('a thread made through T3\'s MCP tools ("mcp:<uuid>") can be sent to and read; an id that looks like a flag cannot', async () => {
+  const withId = (id: string) => [BOARD, T3].map(x => JSON.parse(JSON.stringify(x).replaceAll(BUSY_THREAD, id)))
+  const mcp = `mcp:${BUSY_THREAD}`
+  const [board, t3] = withId(mcp)
+  const r = recorder(JSON.stringify({ thread: { threadId: mcp }, messages: [{ role: 'assistant', text: 'hello' }] }))
+  const a = new DashwebAdapter(cfg, { fetch: fakeFetch({ '/api/board': board, '/api/t3': t3 }).fetch, run: r.run, log: quiet })
+  await a.list()
+  await a.send(BUSY, 'status?')
+  assert.deepEqual(r.calls[0]!.args, ['thread', 'send', '--base-dir', '/opt/t3home', mcp, '-'])
+  assert.equal((await a.transcript(BUSY, 3)).turns[0]!.text, 'hello')
+  assert.ok(r.calls[1]!.args.includes(mcp))
+
+  for (const bad of ['--base-dir', '-x', 'a b', 'a;b', 'a$(b)']) {
+    const [b2, t2] = withId(bad)
+    const r2 = recorder()
+    const a2 = new DashwebAdapter(cfg, { fetch: fakeFetch({ '/api/board': b2, '/api/t3': t2 }).fetch, run: r2.run, log: quiet })
+    await a2.list()
+    await assert.rejects(a2.send(BUSY, 'hi'), /not one the CLI can take|no T3 thread/, bad)
+    assert.equal(r2.calls.length, 0, bad)
+  }
+})

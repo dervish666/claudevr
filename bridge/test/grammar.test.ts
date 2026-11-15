@@ -151,7 +151,7 @@ test('cancel words cancel, armed or not', () => {
 })
 
 test('status is answered from the fleet', () => {
-  for (const w of ['Status.', "what's the status", 'status report', "How's everyone doing?"]) assert.equal(run(w).kind, 'status', w)
+  for (const w of ['Status.', "what's the status", 'status report', "How's everyone doing?", "What's the status of the fleet?", 'status of my agents', 'give me the status on everything']) assert.equal(run(w).kind, 'status', w)
   const i = expectKind(run('status'), 'status')
   assert.match(i.say, /^9 sessions\./)
   assert.match(i.say, /Working: Harbour and Garden VR\./)
@@ -241,4 +241,30 @@ test('"dispatcher" on its own deselects, with a session open or not, and is neve
   assert.equal(expectKind(run('Find out what the dispatcher did with the backups.'), 'tell').viaDispatcher, true)
   // Answering "who is it for?" with "dispatcher" names the dispatcher session.
   assert.equal(expectKind(run('dispatcher', 'target'), 'target').sessionId, 'demo-dispatcher')
+})
+
+test('"be X" still works when speech-to-text writes it as "B. X" or "Bee X"', () => {
+  const characters = [{ name: 'bosun', heardAs: [] }]
+  for (const w of ['B. Bosun.', 'Bee bosun', 'be Bosun']) {
+    const i = interpret({ transcript: w, fleet, heardAs, context: 'none', focusId: 't-tally', characters, character: null, now: NOW })
+    assert.deepEqual(i, { kind: 'character', character: 'bosun', changed: true, say: 'Character: bosun.' }, w)
+  }
+  assert.equal(interpret({ transcript: 'B. Careful with that', fleet, heardAs, context: 'none', focusId: 't-tally', characters, character: null, now: NOW }).kind, 'tell', 'not a character: still a message')
+})
+
+test("the character's name first: a command still runs, anything else is a question for the character and reaches no session", () => {
+  const characters = [{ name: 'bosun', heardAs: ['bozun'] }]
+  const say = (transcript: string, extra: Record<string, unknown> = {}) => interpret({ transcript, fleet, heardAs, context: 'none', focusId: 't-tally', characters, character: 'bosun', now: NOW, ...extra })
+  assert.deepEqual(say('Bosun, what should I look at first?'), { kind: 'ask', character: 'bosun', question: 'What should I look at first?', say: 'Bosun did not answer in time.' })
+  assert.equal(say('Hey Bozun, how are we doing on the weekly limit').kind, 'ask', 'heard as, after a filler')
+  assert.deepEqual(say('Bosun.'), { kind: 'ask', character: 'bosun', question: '', say: 'Listening.' })
+  assert.equal(say('Bosun, yes').kind, 'ask', 'a short answer goes to the character, not to the open session')
+  // Commands after the name are still commands.
+  assert.equal(say('Bosun, status').kind, 'status')
+  assert.equal(expectKind(say('Bosun, tell Tally to run the tests'), 'tell').callsign, 'Tally')
+  assert.equal(expectKind(say('Bosun, switch to Tally'), 'switch').callsign, 'Tally')
+  assert.equal(say('Bosun, cancel', { context: 'confirm' }).kind, 'cancel')
+  // Without the name, and in operator mode, nothing changes.
+  assert.equal(expectKind(say('What should I look at first?'), 'tell').viaFocus, true)
+  assert.equal(expectKind(say('Bosun, what should I look at first?', { character: null }), 'tell').viaFocus, true)
 })

@@ -7,18 +7,31 @@
 // a short countdown. When the countdown ends the card sends itself through
 // POST /api/send; "Send now" skips the wait and "Cancel" (button or voice)
 // stops it. Talking pauses the countdown.
+//
+// Character mode (a character selected on the bridge) changes the words and
+// the wait, never what is done: the action is taken here at once, exactly as
+// in operator mode, a short tone says he was heard, and the character's line
+// is fetched and spoken when it is ready. A character with confirm "quick"
+// arms a 2 s countdown shown as a slim line instead of the 5 s card. The
+// bridge may also push unprompted lines; they are spoken, never acted on,
+// and held back while he talks or while muted.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Candidate, Interpretation, Transcript, VoiceContext, VoiceStatus } from '../../../../shared/protocol.ts'
+import type { Candidate, CharacterInfo, ClientMessage, Interpretation, PendingLine, SpokenLine, Transcript, VoiceContext, VoiceStatus } from '../../../../shared/protocol.ts'
 import { unlockAudio } from './audio-context.ts'
+import { ui } from './blip.ts'
 import { MicError, Recorder } from './recorder.ts'
 import { Speaker } from './speaker.ts'
-import { bridgeStt, type ClientSttProvider } from './stt.ts'
+import { bridgeStt, fetchLine, type ClientSttProvider } from './stt.ts'
 
 /** How long a "who is it for?" waits for its answer. */
 export const CARD_TTL_MS = 60_000
 /** How long a card shows before it sends itself: the window to read it and cancel. */
 export const SEND_COUNTDOWN_MS = 5_000
+/** A character with confirm "quick": shorter, never zero, since speech-to-text mishears and a sent message cannot be recalled. */
+export const QUICK_COUNTDOWN_MS = 2_000
+/** An unprompted line that could not be spoken for this long (he was talking, a reply was playing) is dropped. */
+const ANNOUNCE_STALE_MS = 15_000
 /** How long a sent or cancelled card stays up before it clears itself. */
 export const DISMISS_MS = 2_500
 /** A press shorter than this is a slip, not an utterance. */
@@ -43,6 +56,10 @@ export interface Card {
   viaFocus: boolean
   /** When the countdown ends and the card sends itself. */
   sendAt: number
+  /** The whole countdown, restarted in full after he talks. */
+  countdownMs: number
+  /** Shown as a slim line rather than the full card. */
+  quick: boolean
   state: CardState
   detail: string | null
 }
@@ -122,12 +139,24 @@ export interface VoiceOptions {
    * selected, so a demo tile can never send anything anywhere.
    */
   refuseSend?: { readonly current: ((m: { sessionId: string; viaDispatcher: boolean; viaFocus: boolean }) => string | null) | null }
+  /** The last unprompted line the bridge pushed, to speak. */
+  announce?: SpokenLine | null
+  /** Tells the bridge whether this HUD is muted and whether he is holding to talk. */
+  post?: (m: ClientMessage) => void
+}
+
+/** What was said back: the plain answer, and in character mode the character's line once it is in. */
+export interface Reply {
+  say: string
+  lines: string[] | null
+  /** The line spoken in character, or null in operator mode and while it is being written. */
+  spoken: { character: string; text: string; plain: boolean } | null
 }
 
 export interface Voice {
   phase: Phase
   heard: Heard | null
-  reply: { say: string; lines: string[] | null } | null
+  reply: Reply | null
   card: Card | null
   which: Which | null
   muted: boolean
@@ -136,6 +165,14 @@ export interface Voice {
   sttProblem: string | null
   ttsProblem: string | null
   sttLoading: boolean
+  /** The selected character, or null in operator mode. */
+  character: CharacterInfo | null
+  /** The character whose line is being written, or null. */
+  lineWaiting: string | null
+  /** The last unprompted line, as spoken. */
+  announced: SpokenLine | null
+  /** Why character mode is speaking plain lines, or null. */
+  frontManProblem: string | null
   recorder: Recorder
   speaker: Speaker
   begin: () => Promise<void>
@@ -165,7 +202,16 @@ export function useVoice(o: VoiceOptions): Voice {
   const speaker = useMemo(() => new Speaker(token), [token])
   const [phase, setPhase] = useState<Phase>({ kind: 'idle', note: null })
   const [heard, setHeard] = useState<Heard | null>(null)
-  const [reply, setReply] = useState<{ say: string; lines: string[] | null } | null>(null)
+  const [reply, setReply] = useState<Reply | null>(null)
+  const [lineWaiting, setLineWaiting] = useState<string | null>(null)
+  const [announced, setAnnounced] = useState<SpokenLine | null>(null)
+  const character = voice?.persona?.character ?? null
+  const characterRef = useRef(character)
+  characterRef.current = character
+  /** Bumped by every new hold and every new answer, so a line that arrives late is not spoken over newer words. */
+  const lineSeq = useRef(0)
+  const lineWaitingRef = useRef<string | null>(null)
+  lineWaitingRef.current = lineWaiting
   const [card, setCardState] = useState<Card | null>(null)
   const [which, setWhichState] = useState<Which | null>(null)
   const [muted, setMuted] = useState(readMuted)
@@ -225,7 +271,11 @@ export function useVoice(o: VoiceOptions): Voice {
     tap('voice-sent', { ok: r.ok, status: r.status })
     if (r.ok) {
       setCard({ ...c, state: 'sent', detail: body.said ? `Sent. ${body.said}` : 'Sent.' })
-      speak(`Sent to ${c.callsign}.`)
+      // In character the character has already spoken about this message; a
+      // tone says it went (instrument mode plays its own on sending).
+      if (characterRef.current) {
+        if (!immersive.current) ui.sent()
+      } else speak(`Sent to ${c.callsign}.`)
     } else if (r.status === 429) {
       const wait = Number(r.headers.get('retry-after')) || null
       setCard({ ...c, state: 'limited', detail: `Rate limited: not sent. Try again in ${wait ?? '?'} s.` })
@@ -249,12 +299,14 @@ export function useVoice(o: VoiceOptions): Voice {
     setWhich(null)
     const refused = refuseSend?.current?.({ sessionId, viaDispatcher, viaFocus }) ?? null
     if (refused) {
-      setReply({ say: refused, lines: null })
+      setReply({ say: refused, lines: null, spoken: null })
       tap('voice-refused', { why: refused })
       return
     }
-    setCard({ id: ++cardSeq.current, sessionId, callsign, text, viaDispatcher, viaFocus, sendAt: Date.now() + SEND_COUNTDOWN_MS, state: 'armed', detail: null })
-    tap('voice-armed', { chars: text.length, viaDispatcher, viaFocus })
+    const quick = characterRef.current?.confirm === 'quick'
+    const countdownMs = quick ? QUICK_COUNTDOWN_MS : SEND_COUNTDOWN_MS
+    setCard({ id: ++cardSeq.current, sessionId, callsign, text, viaDispatcher, viaFocus, sendAt: Date.now() + countdownMs, countdownMs, quick, state: 'armed', detail: null })
+    tap('voice-armed', { chars: text.length, viaDispatcher, viaFocus, quick })
   }
 
   // A "who is it for?" lapses on its own.
@@ -277,8 +329,8 @@ export function useVoice(o: VoiceOptions): Voice {
     if (armedId === null || talking) return
     const c = cardRef.current
     if (!c || c.id !== armedId || c.state !== 'armed') return
-    setCard({ ...c, sendAt: Date.now() + SEND_COUNTDOWN_MS })
-    const t = setTimeout(() => void send(), SEND_COUNTDOWN_MS)
+    setCard({ ...c, sendAt: Date.now() + c.countdownMs })
+    const t = setTimeout(() => void send(), c.countdownMs)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [armedId, talking, send])
@@ -303,11 +355,45 @@ export function useVoice(o: VoiceOptions): Voice {
     return () => clearTimeout(t)
   }, [doneId])
 
+  // ---------------------------------------------------------------- character lines
+  /** Fetches the character's line and speaks it, unless newer words came first. The bridge answers within its timeout; only a dead link falls back here. */
+  const speakLine = useCallback(
+    (p: PendingLine, plain: string) => {
+      const seq = ++lineSeq.current
+      setLineWaiting(p.character)
+      const t0 = Date.now()
+      const land = (text: string, isPlain: boolean, how: Record<string, unknown>) => {
+        if (seq !== lineSeq.current) return tap('voice-line-dropped', { why: 'overtaken', ...how })
+        setLineWaiting(null)
+        setReply(r => (r ? { ...r, spoken: { character: p.character, text, plain: isPlain } } : r))
+        tap('voice-line', { ms: Date.now() - t0, ...how })
+        if (talkingRef.current) return
+        speak(text)
+      }
+      fetchLine(token, p.id).then(
+        l => land(l.text, l.source === 'fallback', { source: l.source, bridgeMs: l.ms, reason: l.reason }),
+        (err: unknown) => {
+          console.error('voice: could not fetch the line, speaking the plain one:', err)
+          land(plain, true, { source: 'client-fallback', error: String(err) })
+        },
+      )
+    },
+    [token, speak],
+  )
+
   // ---------------------------------------------------------------- meaning
   const act = useCallback(
-    (i: Interpretation) => {
-      setReply({ say: i.say, lines: i.kind === 'status' || i.kind === 'limits' ? i.lines : null })
-      tap('voice-meaning', { kind: i.kind })
+    (i: Interpretation, line: PendingLine | null = null) => {
+      setReply({ say: i.say, lines: i.kind === 'status' || i.kind === 'limits' ? i.lines : null, spoken: null })
+      tap('voice-meaning', { kind: i.kind, line: !!line })
+      // In character the bridge writes the spoken line; the action below is taken now and does not wait for it.
+      if (line) {
+        ui.heard()
+        speakLine(line, i.kind === 'tell' ? `Message for ${i.callsign}.` : i.say)
+      } else lineSeq.current++
+      const say = (t: string) => {
+        if (!line) speak(t)
+      }
       switch (i.kind) {
         case 'tell':
           // Shown, not spoken: the card on screen is the read-back.
@@ -318,11 +404,11 @@ export function useVoice(o: VoiceOptions): Voice {
           return
         case 'cancel':
           cancel('Cancelled by voice. Nothing sent.')
-          speak(i.say)
+          say(i.say)
           return
         case 'which':
           setWhich({ text: i.text, heard: i.heard, why: i.why, candidates: i.candidates, say: i.say, expiresAt: Date.now() + CARD_TTL_MS })
-          speak(i.say)
+          say(i.say)
           return
         case 'target': {
           const w = whichRef.current
@@ -331,29 +417,31 @@ export function useVoice(o: VoiceOptions): Voice {
           } else {
             setWhich(null)
             selectRef.current(i.sessionId)
-            speak(i.say)
+            say(i.say)
           }
           return
         }
         case 'switch':
         case 'read':
           selectRef.current(i.sessionId)
-          speak(i.say)
+          say(i.say)
           return
         case 'dispatcher':
           homeRef.current()
-          speak(i.say)
+          say(i.say)
           return
         case 'status':
         case 'limits':
         case 'voice':
+        case 'character':
+        case 'ask':
         case 'unknown':
-          speak(i.say)
+          say(i.say)
           return
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [send, cancel, speak],
+    [send, cancel, speak, speakLine],
   )
 
   const context = (): VoiceContext => (cardRef.current?.state === 'armed' ? 'confirm' : whichRef.current ? 'target' : 'none')
@@ -364,6 +452,9 @@ export function useVoice(o: VoiceOptions): Voice {
     holding.current = true
     unlockAudio()
     speaker.stop()
+    // He is talking again: a line still being written for his last words is not spoken over these.
+    lineSeq.current++
+    setLineWaiting(null)
     tap('voice-begin', { mic: recorder.micState() })
     if (!recorder.hasMic) {
       go({ kind: 'mic' })
@@ -419,7 +510,7 @@ export function useVoice(o: VoiceOptions): Voice {
       const via = how === 'leave' ? ' Ended when the pointer left the button.' : ''
       setHeard({ ok: true, text: t.text, detail: `${(t.audioMs / 1000).toFixed(1)} s clip, ${t.totalMs} ms to text (${t.provider}).${via}` })
       go({ kind: 'idle', note: null })
-      if (r.interpretation) act(r.interpretation)
+      if (r.interpretation) act(r.interpretation, r.line ?? null)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [recorder, stt, act],
@@ -478,9 +569,54 @@ export function useVoice(o: VoiceOptions): Voice {
 
   useEffect(() => () => recorder.release(), [recorder])
 
+  // ---------------------------------------------------------------- speaking up
+  // The bridge only speaks up to a HUD that says it is listening, and waits
+  // while he holds to talk.
+  const post = o.post
+  useEffect(() => {
+    post?.({ type: 'presence', muted, holding: talking })
+  }, [post, muted, talking])
+
+  // An unprompted line is spoken when nothing else is: not over him, not
+  // over a reply, not while a line for his words is on its way. Muted drops it.
+  const announce = o.announce ?? null
+  const held = useRef<{ line: SpokenLine; until: number } | null>(null)
+  const lastAnnounce = useRef<string | null>(null)
+  const trySpeakHeld = useCallback(() => {
+    const h = held.current
+    if (!h) return
+    if (Date.now() > h.until) {
+      held.current = null
+      tap('voice-announce-dropped', { why: 'stale' })
+      return
+    }
+    if (mutedRef.current) {
+      held.current = null
+      return
+    }
+    if (talkingRef.current || lineWaitingRef.current || speaker.busy()) return
+    held.current = null
+    setAnnounced(h.line)
+    tap('voice-announce', { source: h.line.source, ms: h.line.ms })
+    speak(h.line.text)
+  }, [speaker, speak])
+  useEffect(() => {
+    if (!announce || announce.id === lastAnnounce.current) return
+    lastAnnounce.current = announce.id
+    if (mutedRef.current) return
+    held.current = { line: announce, until: Date.now() + ANNOUNCE_STALE_MS }
+    trySpeakHeld()
+  }, [announce, trySpeakHeld])
+  useEffect(() => {
+    const t = setInterval(trySpeakHeld, 500)
+    return () => clearInterval(t)
+  }, [trySpeakHeld])
+
   const stt0 = voice?.stt
   const sttProblem = !stt0 ? null : stt0.state === 'ready' ? null : stt0.state === 'loading' ? `Speech model loading (${stt0.provider})…` : `TRANSCRIPTION UNAVAILABLE: ${stt0.error ?? stt0.state}`
   const ttsProblem = voice && !voice.tts.ok ? `Voice out unavailable: ${voice.tts.error ?? 'unknown'}` : null
+  const fm = voice?.persona?.frontMan
+  const frontManProblem = !character || !fm ? null : fm.state === 'starting' ? `${character.name}: front man starting` : fm.state === 'unavailable' || fm.state === 'off' ? `${character.name} speaking plain lines: ${fm.error ?? fm.state}` : fm.error ? `${character.name}: ${fm.error}` : null
 
   const toggleMute = useCallback(() => {
     const m = !mutedRef.current
@@ -510,6 +646,10 @@ export function useVoice(o: VoiceOptions): Voice {
     sttProblem,
     ttsProblem,
     sttLoading: stt0?.state === 'loading',
+    character,
+    lineWaiting,
+    announced,
+    frontManProblem,
     recorder,
     speaker,
     begin,

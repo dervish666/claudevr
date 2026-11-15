@@ -312,7 +312,9 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   const targetId = target.kind === 'demo' ? null : (target.session?.id ?? null)
   const irisName = target.kind === 'dispatcher' ? 'DISPATCHER' : target.kind === 'demo' ? target.callsign : target.session.callsign.toUpperCase()
   const irisSub = target.kind === 'demo' ? 'DEMO · NOT SENDABLE' : target.kind === 'dispatcher' ? (dispatcher ? STATE_WORDS[dispatcher.state] : 'NOT IN FLEET') : STATE_WORDS[target.session.state]
-  const irisColour = target.kind === 'demo' ? C.amber : target.kind === 'dispatcher' ? C.cyan : stateColour((target.session as Session).state)
+  // A character's accent replaces cyan where the scene speaks for the bridge itself: the Core's rings and the dispatcher's iris.
+  const accent = voice.character?.accent ?? C.cyan
+  const irisColour = target.kind === 'demo' ? C.amber : target.kind === 'dispatcher' ? accent : stateColour((target.session as Session).state)
 
   // A selection whose session left the fleet, or a demo tile that is no longer drawn, falls back to the dispatcher.
   useEffect(() => {
@@ -551,7 +553,7 @@ function Scene(p: GateProps & { session: XRSession | null }) {
             <meshBasicMaterial color="#000" side={BackSide} transparent opacity={s.dimmer} depthWrite={false} toneMapped={false} />
           </mesh>
         )}
-        <Rings />
+        <Rings accent={accent} />
         <group name="top-arc">
           <TopArc usage={fleet?.usage} />
         </group>

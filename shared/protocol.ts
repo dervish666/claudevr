@@ -216,13 +216,70 @@ export type Interpretation =
   | { kind: 'cancel'; say: string }
   /** "voice X": the bridge has already changed its speaking voice to `voice`. Null: no change, `say` lists the voices or says why not. */
   | { kind: 'voice'; voice: string | null; say: string }
+  /**
+   * "be X", "X mode", "operator mode", "characters". `character` is the one
+   * now selected (null: operator mode); `changed` says whether this utterance
+   * changed it. The bridge has already acted on it.
+   */
+  | { kind: 'character'; character: string | null; changed: boolean; say: string }
+  /** "Bosun, ...": said to the character by name, not a command. Nothing is done; the character's line is the answer, and `say` is what is spoken if it has none. */
+  | { kind: 'ask'; character: string; question: string; say: string }
   | { kind: 'unknown'; say: string }
+
+/**
+ * In character mode the spoken answer is written by the front man after the
+ * reply has gone back. `id` fetches it from GET /api/line, which answers
+ * within the bridge's line timeout, with the plain `say` when the model was
+ * slow or down.
+ */
+export interface PendingLine {
+  id: string
+  character: string
+}
 
 /** POST /api/transcribe answers this, whatever went wrong. */
 export interface VoiceReply {
   transcript: Transcript
   /** Null when there was no transcript to interpret. */
   interpretation: Interpretation | null
+  /** Set only in character mode. Absent or null: speak `interpretation.say` as before. */
+  line?: PendingLine | null
+}
+
+/** A line to speak: an answer from GET /api/line, or an unprompted one pushed on the WebSocket. */
+export interface SpokenLine {
+  id: string
+  text: string
+  character: string
+  /** `character`: the front man wrote it. `fallback`: the plain line, because the model was slow, down or said nothing usable. */
+  source: 'character' | 'fallback'
+  /** Why it fell back, for the HUD and the log. */
+  reason: string | null
+  /** From the request (or the event) to the line being ready. */
+  ms: number
+}
+
+export interface CharacterInfo {
+  name: string
+  /** `quick`: a 2 s countdown on a slim line. `card`: the full card and 5 s, as in operator mode. */
+  confirm: 'card' | 'quick'
+  /** #rrggbb the HUD picks up while this character is selected, or null. */
+  accent: string | null
+}
+
+export interface FrontManStatus {
+  /** What writes the lines: "claude cli (haiku)", or "off". */
+  provider: string
+  state: 'off' | 'starting' | 'ready' | 'unavailable'
+  /** Why it is not ready, or what the last turn failed with. */
+  error: string | null
+}
+
+export interface PersonaStatus {
+  /** Null: operator mode. */
+  character: CharacterInfo | null
+  characters: CharacterInfo[]
+  frontMan: FrontManStatus
 }
 
 export interface SttStatus {
@@ -243,6 +300,8 @@ export interface TtsStatus {
 export interface VoiceStatus {
   stt: SttStatus
   tts: TtsStatus
+  /** Absent from a bridge older than character mode. */
+  persona?: PersonaStatus
 }
 
 /** The built client the bridge is serving. In dev the HUD reloads when `id` changes. */
@@ -258,3 +317,11 @@ export type ServerMessage =
   | { type: 'status'; status: BackendStatus }
   | { type: 'build'; build: BuildInfo; status: BackendStatus }
   | { type: 'voice'; voice: VoiceStatus; status: BackendStatus }
+  /** Character mode speaking up unprompted: a session needs you, failed, or finished. Speak it, never act on it. */
+  | { type: 'line'; line: SpokenLine; status: BackendStatus }
+
+/**
+ * HUD to bridge, over the WebSocket. The bridge speaks up only to a HUD that
+ * is not muted, and holds its tongue while the person holds to talk.
+ */
+export type ClientMessage = { type: 'presence'; muted: boolean; holding: boolean }
