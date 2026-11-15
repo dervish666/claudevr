@@ -1,0 +1,777 @@
+{
+  "at": 1794736094382,
+  "warming": false,
+  "sessions": {
+    "from": "claude agents",
+    "error": null,
+    "count": 2
+  },
+  "ledger": {
+    "ok": true,
+    "path": "/home/demo/notes/ledger.md",
+    "mtime": 1794323945938.8542,
+    "next": "T-421",
+    "warnings": [
+      "columns missing: sessionId"
+    ],
+    "closed": [
+      {
+        "task": "T-419",
+        "text": "T-419 kettle: DONE 14:40. Pick which calendar to sync first, then confirm the read-only scope.",
+        "verdict": null
+      },
+      {
+        "task": "T-418",
+        "text": "T-418 lighthouse: DONE 14:40. Choose the retention window for backups: 7 days / 14 days / 30 days",
+        "verdict": null
+      },
+      {
+        "task": "T-417",
+        "text": "T-417 Garden: DONE 14:40. Pick which calendar to sync first, then confirm the read-only scope.",
+        "verdict": null
+      }
+    ]
+  },
+  "dispatcher": null,
+  "tasks": [
+    {
+      "task": "T-415",
+      "repo": "garden (demo project)",
+      "session": null,
+      "jobId": "-",
+      "opened": "2026-11-09",
+      "status": "NEEDS SAM Q-1 (in session), Choose the retention window for backups: 7 days / 14 days / 30 days",
+      "lastReport": "Pushed the branch; the preview build is up and the photos load in about a second.",
+      "q": "Q-1",
+      "pushed": "not sent yet",
+      "sessionId": "",
+      "tasks": [
+        "T-415"
+      ],
+      "repoName": "garden",
+      "repoPath": "demo project",
+      "verdict": "NEEDS SAM",
+      "match": null
+    },
+    {
+      "task": "T-420",
+      "repo": "harbour",
+      "session": null,
+      "jobId": "-",
+      "opened": "2026-11-10",
+      "status": "NEEDS SAM Q-1 (relay): Rework the rota export so it groups shifts by week and adds a totals row.",
+      "lastReport": "Pick which calendar to sync first, then confirm the read-only scope.",
+      "q": "Q-1",
+      "pushed": "15:10",
+      "sessionId": "",
+      "tasks": [
+        "T-420"
+      ],
+      "repoName": "harbour",
+      "repoPath": "",
+      "verdict": "NEEDS SAM",
+      "match": null
+    }
+  ],
+  "kanban": {
+    "cards": [
+      {
+        "key": "task:T-415",
+        "kind": "task",
+        "label": "T-415",
+        "tasks": [
+          "T-415"
+        ],
+        "repo": "garden",
+        "status": "NEEDS SAM Q-1 (in session), Choose the retention window for backups: 7 days / 14 days / 30 days",
+        "session": {
+          "live": false,
+          "sessionId": null,
+          "short": null,
+          "name": "T3 thread"
+        },
+        "column": "needs",
+        "why": "open question",
+        "stuck": false,
+        "failed": null,
+        "questions": [
+          {
+            "key": {
+              "sessionId": null,
+              "task": "T-415",
+              "q": "Q-1",
+              "msgId": null
+            },
+            "session": "T-415",
+            "q": "Q-1",
+            "label": "-",
+            "inferred": false,
+            "tasks": [
+              "T-415"
+            ],
+            "route": "in session",
+            "askedAt": null,
+            "asked": "2026-11-09 12:55",
+            "text": "The export now writes one row per shift and the totals match the old report.",
+            "source": "ledger table",
+            "state": "open",
+            "detail": {
+              "task": {
+                "ids": [
+                  "T-415"
+                ],
+                "repo": "garden",
+                "opened": "2026-11-09",
+                "status": "NEEDS SAM Q-1 (in session), Choose the retention window for backups: 7 days / 14 days / 30 days",
+                "lastReport": "Pushed the branch; the preview build is up and the photos load in about a second.",
+                "q": "Q-1",
+                "pushed": "not sent yet"
+              },
+              "report": null,
+              "facts": {
+                "revert": [
+                  "yes"
+                ],
+                "risk": [
+                  "low"
+                ]
+              },
+              "earlier": [],
+              "said": [],
+              "brief": null,
+              "latest": null
+            },
+            "answer": {
+              "ok": false,
+              "why": "the question names no session or task"
+            },
+            "answers": []
+          },
+          {
+            "key": {
+              "sessionId": null,
+              "task": "T-415",
+              "q": "Q-1",
+              "msgId": null
+            },
+            "session": "T3 thread",
+            "q": "Q-1",
+            "inferred": false,
+            "tasks": [
+              "T-415"
+            ],
+            "route": "in session",
+            "askedAt": null,
+            "asked": "not sent yet",
+            "text": "NEEDS SAM Q-1 (in session), Choose the retention window for backups: 7 days / 14 days / 30 days\nRework the rota export so it groups shifts by week and adds a totals row.",
+            "source": "ledger",
+            "untabled": true,
+            "detail": {
+              "task": {
+                "ids": [
+                  "T-415"
+                ],
+                "repo": "garden",
+                "opened": "2026-11-09",
+                "status": "NEEDS SAM Q-1 (in session), Choose the retention window for backups: 7 days / 14 days / 30 days",
+                "lastReport": "Pushed the branch; the preview build is up and the photos load in about a second.",
+                "q": "Q-1",
+                "pushed": "not sent yet"
+              },
+              "report": null,
+              "facts": {},
+              "earlier": [],
+              "said": [],
+              "brief": null,
+              "latest": null
+            },
+            "answer": {
+              "ok": false,
+              "why": "the question names no session or task"
+            },
+            "answers": []
+          }
+        ],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": "NEEDS SAM",
+        "sortAt": 0,
+        "answers": []
+      },
+      {
+        "key": "task:T-420",
+        "kind": "task",
+        "label": "T-420",
+        "tasks": [
+          "T-420"
+        ],
+        "repo": "harbour",
+        "status": "NEEDS SAM Q-1 (relay): Rework the rota export so it groups shifts by week and adds a totals row.",
+        "session": {
+          "live": false,
+          "sessionId": null,
+          "short": null,
+          "name": "T3 thread"
+        },
+        "column": "needs",
+        "why": "open question",
+        "stuck": false,
+        "failed": null,
+        "questions": [
+          {
+            "key": {
+              "sessionId": null,
+              "task": "T-420",
+              "q": "Q-1",
+              "msgId": null
+            },
+            "session": "T-420",
+            "q": "Q-1",
+            "label": "-",
+            "inferred": false,
+            "tasks": [
+              "T-420"
+            ],
+            "route": "relay",
+            "askedAt": null,
+            "asked": "2026-11-10",
+            "text": "Tests pass locally; the flaky one was a timezone assumption in the fixture.",
+            "source": "ledger table",
+            "state": "open",
+            "detail": {
+              "task": {
+                "ids": [
+                  "T-420"
+                ],
+                "repo": "harbour",
+                "opened": "2026-11-10",
+                "status": "NEEDS SAM Q-1 (relay): Rework the rota export so it groups shifts by week and adds a totals row.",
+                "lastReport": "Pick which calendar to sync first, then confirm the read-only scope.",
+                "q": "Q-1",
+                "pushed": "15:10"
+              },
+              "report": null,
+              "facts": {
+                "revert": [
+                  "yes"
+                ]
+              },
+              "earlier": [],
+              "said": [],
+              "brief": null,
+              "latest": null
+            },
+            "answer": {
+              "ok": false,
+              "why": "the question names no session or task"
+            },
+            "answers": []
+          },
+          {
+            "key": {
+              "sessionId": null,
+              "task": "T-420",
+              "q": "Q-1",
+              "msgId": null
+            },
+            "session": "T3 thread",
+            "q": "Q-1",
+            "inferred": false,
+            "tasks": [
+              "T-420"
+            ],
+            "route": "relay",
+            "askedAt": null,
+            "asked": "15:10",
+            "text": "NEEDS SAM Q-1 (relay): Rework the rota export so it groups shifts by week and adds a totals row.\nPlan note written with options A to C; waiting on a choice before building.",
+            "source": "ledger",
+            "untabled": true,
+            "detail": {
+              "task": {
+                "ids": [
+                  "T-420"
+                ],
+                "repo": "harbour",
+                "opened": "2026-11-10",
+                "status": "NEEDS SAM Q-1 (relay): Rework the rota export so it groups shifts by week and adds a totals row.",
+                "lastReport": "Pick which calendar to sync first, then confirm the read-only scope.",
+                "q": "Q-1",
+                "pushed": "15:10"
+              },
+              "report": null,
+              "facts": {},
+              "earlier": [],
+              "said": [],
+              "brief": null,
+              "latest": null
+            },
+            "answer": {
+              "ok": false,
+              "why": "the question names no session or task"
+            },
+            "answers": []
+          }
+        ],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": "NEEDS SAM",
+        "sortAt": 0,
+        "answers": []
+      },
+      {
+        "key": "session:b2e07a6c-d1fe-cc87-ac1e-f2aefa7b9949",
+        "kind": "session",
+        "label": "session",
+        "tasks": [],
+        "repo": "KettleVR",
+        "status": "",
+        "session": {
+          "live": true,
+          "sessionId": "b2e07a6c-d1fe-cc87-ac1e-f2aefa7b9949",
+          "short": "b2e07a6c",
+          "name": "Tidy Up Rota Export",
+          "title": "Tidy Up Rota Export",
+          "t3": {
+            "threadId": "afd5b10a-0619-956e-9bc7-1cc3dddc115c",
+            "link": "https://app.t3.codes/threads/e7908d59-adec-f45e-2a17-cb370264d261/afd5b10a-0619-956e-9bc7-1cc3dddc115c"
+          },
+          "role": null,
+          "status": "busy",
+          "state": "working",
+          "busy": true,
+          "running": 1,
+          "now": {
+            "state": "working",
+            "status": "Agent 16s",
+            "tool": "Agent",
+            "detail": "briefing an agent: Speed Up Config Keys"
+          },
+          "activeAt": 1794736078450,
+          "updatedAt": 1794736035496,
+          "bridge": null
+        },
+        "column": "working",
+        "why": "session busy",
+        "stuck": false,
+        "failed": null,
+        "questions": [],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": null,
+        "sortAt": 1794736078450,
+        "answers": []
+      },
+      {
+        "key": "session:6cc1b82e-a279-dab0-465e-ff2b4a03d828",
+        "kind": "session",
+        "label": "session",
+        "tasks": [],
+        "repo": "Kettle",
+        "status": "",
+        "session": {
+          "live": true,
+          "sessionId": "6cc1b82e-a279-dab0-465e-ff2b4a03d828",
+          "short": "6cc1b82e",
+          "name": "Fix Photo Import",
+          "title": "Fix Photo Import",
+          "t3": {
+            "threadId": "6675ab73-d2db-25b9-3bda-17771c98e01c",
+            "link": "https://app.t3.codes/threads/e7908d59-adec-f45e-2a17-cb370264d261/6675ab73-d2db-25b9-3bda-17771c98e01c"
+          },
+          "role": null,
+          "status": "idle",
+          "state": "idle",
+          "busy": false,
+          "running": 0,
+          "now": {
+            "state": "idle",
+            "status": "idle"
+          },
+          "activeAt": 1794734887749,
+          "updatedAt": 1794734887951,
+          "bridge": null
+        },
+        "column": "quiet",
+        "why": "quiet",
+        "stuck": false,
+        "failed": null,
+        "questions": [],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": null,
+        "sortAt": 1794734887749,
+        "answers": []
+      },
+      {
+        "key": "closed:T-419:4",
+        "kind": "closed",
+        "label": "T-419",
+        "tasks": [
+          "T-419"
+        ],
+        "repo": "quill",
+        "status": "The settings page reads the theme from the store now, no reload needed.",
+        "session": null,
+        "column": "done",
+        "why": "closed today",
+        "stuck": false,
+        "failed": null,
+        "questions": [],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": null,
+        "sortAt": 0,
+        "answers": []
+      },
+      {
+        "key": "closed:T-418:5",
+        "kind": "closed",
+        "label": "T-418",
+        "tasks": [
+          "T-418"
+        ],
+        "repo": "Lantern",
+        "status": "Found it: the parser dropped the last field when a line ended with a comma.",
+        "session": null,
+        "column": "done",
+        "why": "closed today",
+        "stuck": false,
+        "failed": null,
+        "questions": [],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": null,
+        "sortAt": 0,
+        "answers": []
+      },
+      {
+        "key": "closed:T-417:6",
+        "kind": "closed",
+        "label": "T-417",
+        "tasks": [
+          "T-417"
+        ],
+        "repo": "bramble",
+        "status": "Tests pass locally; the flaky one was a timezone assumption in the fixture.",
+        "session": null,
+        "column": "done",
+        "why": "closed today",
+        "stuck": false,
+        "failed": null,
+        "questions": [],
+        "lastReport": null,
+        "lastSent": null,
+        "ledgerVerdict": null,
+        "sortAt": 0,
+        "answers": []
+      }
+    ],
+    "counts": {
+      "needs": 2,
+      "working": 1,
+      "done": 3,
+      "quiet": 1
+    },
+    "questionsFrom": "ledger table",
+    "reports": {
+      "from": null,
+      "events": 0,
+      "error": "no dispatcher session, so no reports or answers"
+    }
+  },
+  "messages": {
+    "wired": false,
+    "why": "not wired yet: the dispatcher's mod is not collecting page messages (it needs the status-dash change)",
+    "max": 1000,
+    "items": []
+  },
+  "other": [
+    {
+      "sessionId": "b2e07a6c-d1fe-cc87-ac1e-f2aefa7b9949",
+      "pid": 58939,
+      "name": "Tidy Up Rota Export",
+      "title": "Tidy Up Rota Export",
+      "t3": {
+        "threadId": "afd5b10a-0619-956e-9bc7-1cc3dddc115c",
+        "link": "https://app.t3.codes/threads/e7908d59-adec-f45e-2a17-cb370264d261/afd5b10a-0619-956e-9bc7-1cc3dddc115c"
+      },
+      "role": null,
+      "kind": "interactive",
+      "status": "busy",
+      "state": "working",
+      "cwd": "/home/demo/projects/orchard",
+      "startedAt": 1794735607507,
+      "publishing": true,
+      "project": "KettleVR",
+      "task": "Found it: the parser dropped the last field when a line ended with a comma.",
+      "model": "claude-fable-5-2",
+      "costUsd": 6.9203259999999975,
+      "activeAt": 1794736078450,
+      "now": {
+        "state": "working",
+        "status": "Agent 16s",
+        "tool": "Agent",
+        "detail": "briefing an agent: Speed Up Config Keys"
+      },
+      "recent": [
+        {
+          "at": 1794735676292,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Search for the cache header setting"
+        },
+        {
+          "at": 1794735687715,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "List files in the src directory"
+        },
+        {
+          "at": 1794735712648,
+          "kind": "tool",
+          "tool": "Read",
+          "text": ""
+        },
+        {
+          "at": 1794735719869,
+          "kind": "tool",
+          "tool": "Read",
+          "text": ""
+        },
+        {
+          "at": 1794735722593,
+          "kind": "tool",
+          "tool": "Read",
+          "text": ""
+        },
+        {
+          "at": 1794735724126,
+          "kind": "tool",
+          "tool": "Read",
+          "text": "Run the unit tests"
+        },
+        {
+          "at": 1794735725165,
+          "kind": "tool",
+          "tool": "Read",
+          "text": ""
+        },
+        {
+          "at": 1794735728967,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Show the last ten commits"
+        },
+        {
+          "at": 1794735738045,
+          "kind": "say",
+          "text": "Pushed the branch; the preview build is up and the photos load in about a second."
+        },
+        {
+          "at": 1794736078450,
+          "kind": "tool",
+          "tool": "Agent",
+          "text": "Show the last ten commits"
+        }
+      ],
+      "say": {
+        "at": 1794735738045,
+        "text": "Pushed the branch; the preview build is up and the photos load in about a second."
+      },
+      "agents": [
+        {
+          "id": "a4f021d5f091ab9ac",
+          "type": "general-purpose",
+          "description": "Add CSV Parser",
+          "status": "running",
+          "statusFrom": "status-dash",
+          "model": "claude-opus-5-5",
+          "effort": "medium",
+          "startedAt": 1794736078567,
+          "activeMs": 9947,
+          "liveFrom": 1794736088514,
+          "usd": 0.347603,
+          "lastAt": 1794736088514,
+          "brief": "Choose the retention window for backups: 7 days / 14 days / 30 days\nparked until the new API key arrives\nRework the rota export so it groups shifts by week and adds a totals row.\nPick which calendar to sync first, then confirm the read-only scope.\nPlan note written with options A to C; waiting on a choice before building.\nPick which calendar to sync first, then confirm the read-only scope.\nShipped v1.4.2, checks pass; follow-up for the icon set left open.\nChoose the retention window for backups: 7 days / 14 days / 30 days\nChoose the retention window for backups: 7 days / 14 days / 30 days\nparked until the new API key arrives\nRework the rota export so it groups shifts by week and adds a totals row.\nPlan note written with options A to C; waiting on a choice before building.",
+          "now": {
+            "state": "working",
+            "status": "Bash 0s",
+            "tool": "Bash",
+            "detail": "Show the last ten commits"
+          },
+          "recent": [
+            {
+              "at": 1794736082600,
+              "kind": "tool",
+              "tool": "Bash",
+              "text": "Run the unit tests"
+            },
+            {
+              "at": 1794736087707,
+              "kind": "tool",
+              "tool": "Bash",
+              "text": "Build the client bundle"
+            },
+            {
+              "at": 1794736088374,
+              "kind": "tool",
+              "tool": "Bash",
+              "text": "Search for the cache header setting"
+            }
+          ]
+        },
+        {
+          "id": "a9a6e66f7975ef969",
+          "type": "router-large",
+          "description": "Trim Search Index",
+          "status": "completed",
+          "statusFrom": "status-dash",
+          "model": "claude-opus-5-5",
+          "effort": "high",
+          "startedAt": 1794584343504,
+          "endedAt": 1794584683719,
+          "activeMs": 340215,
+          "usd": 1.6408494,
+          "shape": "foreground",
+          "depth": 1,
+          "lastAt": 1794584683831.5876,
+          "brief": "Shipped v1.4.2, checks pass; follow-up for the icon set left open.\nparked until the new API key arrives\nShipped v1.4.2, checks pass; follow-up for the icon set left open.\nChoose the retention window for backups: 7 days / 14 days / 30 days\nRework the rota export so it groups shifts by week and adds a totals row.\nPlan note written with options A to C; waiting on a choice before building.\nparked until the new API key arrives\nparked until the new API key arrives",
+          "now": null,
+          "recent": []
+        },
+        {
+          "id": "a3f2dafae5b78c63a",
+          "type": "general-purpose",
+          "description": "Draft Release Notes",
+          "status": "completed",
+          "statusFrom": "status-dash",
+          "model": "claude-sonnet-5-5",
+          "effort": "high",
+          "startedAt": 1794584381020,
+          "endedAt": 1794584578863,
+          "activeMs": 197843,
+          "usd": 0.6857586000000001,
+          "shape": "background",
+          "parent": "a9a6e66f7975ef969",
+          "depth": 2,
+          "lastAt": 1794584579000.7305,
+          "brief": "parked until the new API key arrives\nparked until the new API key arrives\nShipped v1.4.2, checks pass; follow-up for the icon set left open.\nPick which calendar to sync first, then confirm the read-only scope.\nChoose the retention window for backups: 7 days / 14 days / 30 days\nShipped v1.4.2, checks pass; follow-up for the icon set left open.",
+          "now": null,
+          "recent": []
+        }
+      ],
+      "more": 0,
+      "updatedAt": 1794736035496,
+      "asking": []
+    },
+    {
+      "sessionId": "6cc1b82e-a279-dab0-465e-ff2b4a03d828",
+      "pid": 44134,
+      "name": "Fix Photo Import",
+      "title": "Fix Photo Import",
+      "t3": {
+        "threadId": "6675ab73-d2db-25b9-3bda-17771c98e01c",
+        "link": "https://app.t3.codes/threads/e7908d59-adec-f45e-2a17-cb370264d261/6675ab73-d2db-25b9-3bda-17771c98e01c"
+      },
+      "role": null,
+      "kind": "interactive",
+      "status": "idle",
+      "state": "idle",
+      "cwd": "/home/demo/projects/kettle",
+      "startedAt": 1794734719507,
+      "publishing": true,
+      "project": "Kettle",
+      "task": "Two of the five cron jobs were already disabled, so only three need moving.",
+      "model": "claude-opus-5-5",
+      "costUsd": 4.788312000000001,
+      "activeAt": 1794734887749,
+      "now": {
+        "state": "idle",
+        "status": "idle"
+      },
+      "recent": [
+        {
+          "at": 1794734817711,
+          "kind": "say",
+          "text": "I left the old endpoint in place behind a flag until the app update ships."
+        },
+        {
+          "at": 1794734817716,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Run the unit tests"
+        },
+        {
+          "at": 1794734820629,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Read the config loader"
+        },
+        {
+          "at": 1794734823205,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Show the last ten commits"
+        },
+        {
+          "at": 1794734825417,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Run the unit tests"
+        },
+        {
+          "at": 1794734834307,
+          "kind": "say",
+          "text": "The settings page reads the theme from the store now, no reload needed."
+        },
+        {
+          "at": 1794734837882,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Read the export module"
+        },
+        {
+          "at": 1794734879490,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Read the export module"
+        },
+        {
+          "at": 1794734882016,
+          "kind": "tool",
+          "tool": "Bash",
+          "text": "Run the unit tests"
+        },
+        {
+          "at": 1794734887749,
+          "kind": "say",
+          "text": "Two of the five cron jobs were already disabled, so only three need moving."
+        }
+      ],
+      "say": {
+        "at": 1794734887749,
+        "text": "Two of the five cron jobs were already disabled, so only three need moving."
+      },
+      "agents": [
+        {
+          "id": "afd6c84810e43b878",
+          "type": "router-hardest",
+          "description": "Speed Up Offline Sync",
+          "status": "completed",
+          "statusFrom": "status-dash",
+          "model": "claude-opus-5-5",
+          "effort": "xhigh",
+          "startedAt": 1794731171127,
+          "endedAt": 1794731859066,
+          "activeMs": 687939,
+          "usd": 3.0927722,
+          "now": null,
+          "recent": []
+        }
+      ],
+      "more": 0,
+      "updatedAt": 1794734887951,
+      "asking": []
+    }
+  ]
+}

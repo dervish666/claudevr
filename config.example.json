@@ -1,0 +1,32 @@
+{
+  "backend": "dashweb",
+  "port": 8443,
+  "allowIps": [
+    "192.168.1.50"
+  ],
+  "autoPair": false,
+  "sendsPerMinute": 6,
+  "sendsPerHour": 60,
+  "dashweb": {
+    "url": "http://127.0.0.1:PORT",
+    "t3Bin": "~/.t3/bin/t3",
+    "t3BaseDir": "~/.t3",
+    "pollMs": 2000
+  },
+  "callsigns": {
+    "my-project": {
+      "callsign": "Atlas",
+      "heardAs": [
+        "Atlass"
+      ]
+    },
+    "another-project": "Juniper"
+  },
+  "stt": {
+    "provider": "parakeet"
+  },
+  "tts": {
+    "provider": "say",
+    "voice": "Daniel"
+  }
+}

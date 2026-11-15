@@ -1,0 +1,17 @@
+main { max-width: 1200px; margin: 0 auto; }
+.lede { color: var(--muted); }
+.post { margin: 20px 0; padding: 16px 20px; border-radius: var(--radius); background: var(--panel); font-size: 1.2rem; font-weight: 600; }
+.post.good { border-left: 10px solid var(--ok); }
+.post.bad { border-left: 10px solid var(--bad); color: #ffd7d7; }
+.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+.check { background: var(--panel); border-radius: var(--radius); padding: 16px 20px; border-left: 10px solid var(--line); }
+.check-head { display: flex; justify-content: space-between; gap: 16px; font-size: 1.25rem; font-weight: 600; }
+.word { white-space: nowrap; }
+.detail { color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
+.s-yes { border-left-color: var(--ok); } .s-yes .word { color: var(--ok); }
+.s-no { border-left-color: var(--bad); } .s-no .word { color: var(--bad); }
+.s-denied { border-left-color: var(--warn); } .s-denied .word { color: var(--warn); }
+.s-could-not-run { border-left-color: var(--ask); } .s-could-not-run .word { color: var(--ask); }
+.s-needs-tap .word, .s-running .word { color: var(--muted); }
+.pair { margin: 20px 0; display: grid; gap: 12px; padding: 20px; background: var(--panel); border-radius: var(--radius); }
+.foot { margin-top: 28px; }

@@ -1,0 +1,535 @@
+// Instrument mode: the immersive-ar HUD. This file is the lazy chunk's
+// entry; the 2D page imports it in the background (hud/InstrumentEntry.tsx)
+// and mounts <Instrument mode="xr"> once it arrives, so an Enter press can
+// request the session inside the press. The scene itself mounts only while
+// a session runs, or in the desktop preview at /?instrument=preview.
+
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { PointerEvents, XR, noEvents, useXR } from '@react-three/xr'
+import { signal } from '@preact/signals-core'
+import { BackSide, Euler, Quaternion, Vector3, type Group } from 'three'
+import type { Session } from '../../../shared/protocol.ts'
+import type { BridgeState } from '../hud/useBridge.ts'
+import { IN_INSTRUMENT_KEY } from '../hud/InstrumentEntry.tsx'
+import { unlockAudio } from '../hud/voice/audio-context.ts'
+import { voiceTap, type Voice } from '../hud/voice/useVoice.ts'
+import { Controls } from './Controls.tsx'
+import { Alarm, CardView, CORE_Y, HeardLine, Iris, Rings, TopArc, VoiceArc } from './Core.tsx'
+import { leakProbe } from './leakprobe.ts'
+import { settings, setSetting, useSettings } from './settings.ts'
+import { audioListener, blips, chime, routeFrom } from './sound.ts'
+import { FRAMEBUFFER_SCALE, countTextures, glTextures, store } from './store.ts'
+import { RADIUS, StreamLayer, StreamMesh, streamScroll, useTranscript, type Target } from './Stream.tsx'
+import { flush, frameStats, frameTick, log, resetFrames, startTelemetry } from './telemetry.ts'
+import { C, STATE_WORDS, stateColour } from './theme.ts'
+import { Tether, Tiles, isDemoId, slotPose, useTiles } from './Tiles.tsx'
+
+/** A press on the iris shorter than this is a tap (back to the dispatcher), not speech. */
+const TAP_MS = 350
+const STATS_MS = 5000
+/** Thumbstick scroll speed, design px per second at full deflection. */
+const SCROLL_PX_S = 700
+const LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+
+let pressedAt: number | null = null
+
+/** On localhost with no WebXR, @react-three/xr installs Meta's emulator asynchronously; wait for it briefly. */
+function emulatorReady(ms: number): Promise<void> {
+  if (!LOCAL || store.getState().emulator) return Promise.resolve()
+  return new Promise(done => {
+    const t = setTimeout(() => {
+      stop()
+      done()
+    }, ms)
+    const stop = store.subscribe(st => {
+      if (!st.emulator) return
+      clearTimeout(t)
+      stop()
+      done()
+    })
+  })
+}
+
+/**
+ * Desktop Chromium has a native navigator.xr that offers no sessions, and
+ * IWER will not replace a native runtime unless forced, so the emulator
+ * @react-three/xr starts stays inert. On localhost only, force it in.
+ * `?emulatelayers=1` also installs IWER's WebXR Layers polyfill, which runs
+ * the layer code path (drawn in WebGL, not by a compositor).
+ */
+function forceEmulator(): void {
+  const em = store.getState().emulator as { installRuntime?: (o: { forceInstall: boolean; polyfillLayers: boolean }) => void; __claudevrForced?: true } | undefined
+  if (!LOCAL || !em?.installRuntime || em.__claudevrForced) return
+  em.__claudevrForced = true
+  const polyfillLayers = new URLSearchParams(location.search).get('emulatelayers') === '1'
+  em.installRuntime({ forceInstall: true, polyfillLayers })
+  console.warn(`instrument: IWER emulator forced over the native runtime${polyfillLayers ? ', with the layers polyfill' : ''}`)
+}
+
+export async function arSupported(): Promise<boolean> {
+  try {
+    if (!(await navigator.xr?.isSessionSupported('immersive-ar'))) {
+      await emulatorReady(5000)
+      forceEmulator()
+    }
+    return (await navigator.xr?.isSessionSupported('immersive-ar')) ?? false
+  } catch (err) {
+    console.error('instrument: isSessionSupported failed:', err)
+    return false
+  }
+}
+
+/**
+ * The Enter press. Everything that needs a user gesture happens here, in
+ * the press: the audio context is resumed, the mic is asked for (not
+ * awaited, so the session request stays inside the gesture), and the
+ * session is requested.
+ */
+export function enterInstrument(voice: Voice): Promise<void> {
+  pressedAt = performance.now()
+  unlockAudio()
+  log('enter-press', { micBefore: voice.recorder.micState(), visibility: document.visibilityState, focused: document.hasFocus() })
+  voice.recorder.ensureMic().then(
+    () => log('mic-ready', { mic: voice.recorder.micState(), sincePressMs: Math.round(performance.now() - (pressedAt ?? 0)) }),
+    (err: unknown) => {
+      console.error('instrument: microphone not available at entry:', err)
+      log('mic-failed', { error: String(err) })
+    },
+  )
+  return store.enterAR().then(
+    () => undefined,
+    (err: unknown) => {
+      console.error('instrument: enterAR failed:', err)
+      log('enter-failed', { error: String(err) })
+      void flush()
+      throw err
+    },
+  )
+}
+
+export interface InstrumentProps {
+  mode: 'xr' | 'preview'
+  token: string
+  bridge: BridgeState
+  voice: Voice
+  now: number
+  alarms: string[]
+  /** The selected tile's id (a session or a demo tile), null for the dispatcher. */
+  selected: string | null
+  onSelect: (id: string | null) => void
+  /** Read by the voice hook: true while a session runs. */
+  immersive: MutableRefObject<boolean>
+  onSessionChange: (active: boolean) => void
+}
+
+export function Instrument(p: InstrumentProps) {
+  const preview = p.mode === 'preview'
+  useEffect(() => {
+    startTelemetry(p.token)
+  }, [p.token])
+  useEffect(() => {
+    if (!preview) return
+    log('preview-start', { ua: navigator.userAgent })
+    voiceTap.emit = (type, data) => log(type, { ...data, mode: 'preview' })
+    return () => {
+      voiceTap.emit = null
+    }
+  }, [preview])
+  return (
+    <div className={preview ? 'instrument-preview' : 'instrument-host'} aria-hidden={!preview}>
+      <Canvas
+        flat
+        frameloop={preview ? 'always' : 'demand'}
+        events={noEvents}
+        gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
+        camera={{ position: [0, 0, 0], fov: 62, near: 0.05, far: 20 }}
+        onCreated={({ gl, scene }) => {
+          countTextures(gl)
+          gl.setClearColor(0x000000, 0)
+          scene.background = null
+        }}
+      >
+        <PointerEvents />
+        <XR store={store}>
+          <Gate {...p} />
+        </XR>
+      </Canvas>
+    </div>
+  )
+}
+
+/** Mounts the scene only while a session runs (or always in the preview), and owns the session's bookkeeping. */
+function Gate(p: InstrumentProps) {
+  const session = useXR(s => s.session)
+  const gl = useThree(s => s.gl)
+  const camera = useThree(s => s.camera)
+  const preview = p.mode === 'preview'
+  const changeRef = useRef(p.onSessionChange)
+  changeRef.current = p.onSessionChange
+  const voiceRef = useRef(p.voice)
+  voiceRef.current = p.voice
+
+  useEffect(() => {
+    if (!session) return
+    const started = performance.now()
+    let reloadAt: number | null = null
+    try {
+      const v = sessionStorage.getItem('claudevr.reloadAt')
+      reloadAt = v ? Number(v) : null
+      sessionStorage.removeItem('claudevr.reloadAt')
+      sessionStorage.setItem(IN_INSTRUMENT_KEY, '1')
+    } catch (err) {
+      console.error('instrument: sessionStorage unavailable:', err)
+    }
+    p.immersive.current = true
+    changeRef.current(true)
+    const v = voiceRef.current
+    voiceTap.emit = (type, data) => log(type, data)
+    v.recorder.onTrackEvent = (type, state) => log(`mic-track-${type}`, { mic: state })
+    const base = gl.xr.getBaseLayer?.() as XRWebGLLayer | XRProjectionLayer | undefined
+    log('session-start', {
+      enabledFeatures: (session as XRSession & { enabledFeatures?: string[] }).enabledFeatures ?? null,
+      environmentBlendMode: session.environmentBlendMode ?? null,
+      frameRate: session.frameRate ?? null,
+      supportedFrameRates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null,
+      framebuffer: base ? { width: (base as XRWebGLLayer).framebufferWidth ?? (base as XRProjectionLayer).textureWidth ?? null, height: (base as XRWebGLLayer).framebufferHeight ?? (base as XRProjectionLayer).textureHeight ?? null, kind: base.constructor?.name ?? null } : null,
+      framebufferScale: FRAMEBUFFER_SCALE,
+      loadToSessionMs: Math.round(started),
+      pressToSessionMs: pressedAt === null ? null : Math.round(started - pressedAt),
+      reloadToSessionMs: reloadAt ? Date.now() - reloadAt : null,
+      mic: v.recorder.micState(),
+      settings: settings.current,
+      inputSources: Array.from(session.inputSources).map(s => ({ hand: s.handedness, mode: s.targetRayMode, profiles: s.profiles })),
+    })
+    const micAt = (label: string) => log('mic', { at: label, mic: voiceRef.current.recorder.micState(), visibility: session.visibilityState })
+    const t2 = setTimeout(() => micAt('+2s'), 2000)
+    const t10 = setTimeout(() => micAt('+10s'), 10_000)
+    const every = setInterval(() => micAt('every 30s'), 30_000)
+    micAt('+0s')
+    const onVis = () => log('xr-visibility', { state: session.visibilityState })
+    const onSources = (e: XRInputSourcesChangeEvent) => log('xr-inputs', { added: e.added.map(s => `${s.handedness}/${s.targetRayMode}`), removed: e.removed.map(s => `${s.handedness}/${s.targetRayMode}`) })
+    session.addEventListener('visibilitychange', onVis)
+    session.addEventListener('inputsourceschange', onSources as EventListener)
+    const l = audioListener(camera)
+    log('audio', { listener: !!l })
+    void flush()
+    return () => {
+      clearTimeout(t2)
+      clearTimeout(t10)
+      clearInterval(every)
+      session.removeEventListener('visibilitychange', onVis)
+      session.removeEventListener('inputsourceschange', onSources as EventListener)
+      p.immersive.current = false
+      voiceTap.emit = null
+      voiceRef.current.recorder.onTrackEvent = null
+      voiceRef.current.speaker.route = null
+      try {
+        sessionStorage.removeItem(IN_INSTRUMENT_KEY)
+      } catch (err) {
+        console.error('instrument: sessionStorage unavailable:', err)
+      }
+      log('session-end', { durationS: Math.round((performance.now() - started) / 100) / 10, mic: voiceRef.current.recorder.micState() })
+      resetFrames()
+      void flush()
+      changeRef.current(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
+
+  if (!session && !preview) return null
+  return <Scene {...p} session={session ?? null} />
+}
+
+function Scene(p: InstrumentProps & { session: XRSession | null }) {
+  const { bridge, voice, session } = p
+  const preview = p.mode === 'preview'
+  const s = useSettings()
+  const fleet = bridge.fleet
+  const rig = useRef<Group>(null)
+  const irisRef = useRef<Group | null>(null)
+  const tileRefs = useRef<(Group | null)[]>([])
+  const level = useRef(0)
+  const camera = useThree(st => st.camera)
+  const gl = useThree(st => st.gl)
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+
+  // ------------------------------------------------------------ who the Core addresses
+  const items = useTiles(fleet?.sessions)
+  const dispatcher = fleet?.sessions.find(x => x.kind === 'dispatcher') ?? null
+  const selItem = p.selected ? items.find(it => (it.kind === 'session' ? it.session.id : it.id) === p.selected) : undefined
+  const target: Target = !selItem ? { kind: 'dispatcher', session: dispatcher } : selItem.kind === 'demo' ? { kind: 'demo', id: selItem.id, callsign: selItem.callsign } : { kind: 'session', session: selItem.session }
+  const data = useTranscript(p.token, target)
+  const fleetIds = useMemo(() => new Set((fleet?.sessions ?? []).map(x => x.id)), [fleet])
+  const irisName = target.kind === 'dispatcher' ? 'DISPATCHER' : target.kind === 'demo' ? target.callsign : target.session.callsign.toUpperCase()
+  const irisSub = target.kind === 'demo' ? 'DEMO · NOT SENDABLE' : target.kind === 'dispatcher' ? (dispatcher ? STATE_WORDS[dispatcher.state] : 'NOT IN FLEET') : STATE_WORDS[target.session.state]
+  const irisColour = target.kind === 'demo' ? C.amber : target.kind === 'dispatcher' ? C.cyan : stateColour((target.session as Session).state)
+
+  // A selection whose session left the fleet falls back to the dispatcher.
+  useEffect(() => {
+    if (fleet && p.selected && !isDemoId(p.selected) && !fleetIds.has(p.selected)) p.onSelect(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fleet, fleetIds, p.selected])
+  useEffect(() => log('target', { kind: target.kind, id: p.selected }), [target.kind, p.selected])
+
+  // ------------------------------------------------------------ sound
+  useEffect(() => {
+    const iris = irisRef.current
+    if (!iris) return
+    voice.speaker.route = routeFrom(iris, camera)
+    return () => {
+      voice.speaker.route = null
+    }
+  }, [voice.speaker, camera])
+  const phaseKind = voice.phase.kind
+  const lastPhase = useRef(phaseKind)
+  useEffect(() => {
+    if (phaseKind === 'recording' && lastPhase.current !== 'recording') blips.listenStart()
+    if (lastPhase.current === 'recording' && phaseKind !== 'recording') blips.listenStop()
+    lastPhase.current = phaseKind
+  }, [phaseKind])
+  const cardState = voice.card?.state
+  useEffect(() => {
+    if (cardState === 'sending') blips.send()
+  }, [cardState])
+
+  // ------------------------------------------------------------ hold to talk
+  const hold = useRef<{ by: 'iris' | 'grip'; at: number } | null>(null)
+  const startHold = (by: 'iris' | 'grip') => {
+    if (hold.current) return
+    hold.current = { by, at: performance.now() }
+    log('hold-start', { by })
+    void voiceRef.current.begin()
+  }
+  const endHold = (by: 'iris' | 'grip' | 'any') => {
+    const h = hold.current
+    if (!h || (by !== 'any' && by !== h.by)) return
+    hold.current = null
+    const ms = performance.now() - h.at
+    log('hold-end', { by: h.by, ms: Math.round(ms) })
+    if (ms < TAP_MS) {
+      void voiceRef.current.end('tap')
+      if (h.by === 'iris') p.onSelect(null)
+    } else void voiceRef.current.end('release')
+  }
+  const endRef = useRef(endHold)
+  endRef.current = endHold
+  const startRef = useRef(startHold)
+  startRef.current = startHold
+
+  useEffect(() => {
+    if (!session) {
+      // The preview: a release anywhere on the page ends the hold.
+      const up = () => endRef.current('any')
+      addEventListener('pointerup', up)
+      return () => removeEventListener('pointerup', up)
+    }
+    const sqStart = (e: XRInputSourceEvent) => {
+      log('squeeze', { hand: e.inputSource.handedness })
+      startRef.current('grip')
+    }
+    const sqEnd = () => endRef.current('grip')
+    const selEnd = () => endRef.current('iris')
+    session.addEventListener('squeezestart', sqStart as EventListener)
+    session.addEventListener('squeezeend', sqEnd)
+    session.addEventListener('selectend', selEnd)
+    return () => {
+      session.removeEventListener('squeezestart', sqStart as EventListener)
+      session.removeEventListener('squeezeend', sqEnd)
+      session.removeEventListener('selectend', selEnd)
+    }
+  }, [session])
+
+  // ------------------------------------------------------------ fake a need
+  const [pulse, setPulse] = useState<{ slot: number; n: number } | null>(null)
+  const fakeNeed = () => {
+    const slots = items.map(it => it.slot)
+    const slot = slots.length ? slots[Math.floor(Math.random() * slots.length)]! : 0
+    const from = tileRefs.current[slot]
+    log('fake-need', { slot, side: slotPose(slot).side < 0 ? 'left' : 'right' })
+    if (from) chime(from, camera)
+    setPulse(q => ({ slot, n: (q?.n ?? 0) + 1 }))
+  }
+
+  // ------------------------------------------------------------ frame loop
+  const centre = useRef(true)
+  const perf = useMemo(() => signal(preview ? 'PREVIEW: no frame stats' : 'FRAMES: measuring…'), [preview])
+  const mic = useMemo(() => signal('MIC: ?'), [])
+  const lastStats = useRef(performance.now())
+  const pos = useMemo(() => new Vector3(), [])
+  const quat = useMemo(() => new Quaternion(), [])
+  const eul = useMemo(() => new Euler(0, 0, 0, 'YXZ'), [])
+
+  useFrame((_, dt, frame?: XRFrame) => {
+    const now = performance.now()
+    voiceRef.current.tick(Date.now())
+    level.current = voiceRef.current.recorder.level() ?? 0
+    const r = rig.current
+    if (r && session && frame && centre.current) {
+      const space = gl.xr.getReferenceSpace()
+      const pose = space ? frame.getViewerPose(space) : undefined
+      if (pose) {
+        const t = pose.transform
+        pos.set(t.position.x, t.position.y, t.position.z)
+        quat.set(t.orientation.x, t.orientation.y, t.orientation.z, t.orientation.w)
+        eul.setFromQuaternion(quat, 'YXZ')
+        r.position.copy(pos)
+        r.rotation.set(0, eul.y, 0)
+        r.visible = true
+        centre.current = false
+        log('centred', { at: [pos.x, pos.y, pos.z].map(n => Math.round(n * 1000) / 1000), yawDeg: Math.round((eul.y * 180) / Math.PI) })
+      }
+    }
+    if (!session) return
+    frameTick(now)
+    for (const src of session.inputSources) {
+      const y = src.gamepad?.axes[3] ?? 0
+      if (Math.abs(y) > 0.2) streamScroll.pending += y * SCROLL_PX_S * dt
+    }
+    if (now - lastStats.current >= STATS_MS) {
+      lastStats.current = now
+      const st = frameStats()
+      const info = gl.info
+      const heap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? null
+      const m = voiceRef.current.recorder.micState()
+      log('frames', {
+        ...(st ?? { n: 0 }),
+        memory: { geometries: info.memory.geometries, textures: info.memory.textures },
+        glTexturesCreated: glTextures.created,
+        glTexturesDeleted: glTextures.deleted,
+        render: { calls: info.render.calls, triangles: info.render.triangles },
+        programs: info.programs?.length ?? null,
+        jsHeap: heap,
+        settings: settings.current,
+        visibility: session.visibilityState,
+      })
+      if (st) perf.value = `FRAMES ${st.fps} FPS · P50 ${st.p50} · P90 ${st.p90} · P99 ${st.p99} MS · ${st.dropped} SLOW`
+      mic.value = `MIC ${m.stream ? m.readyState.toUpperCase() : 'NOT OPEN'}${m.muted ? ' · MUTED' : ''}${voiceRef.current.phase.kind === 'recording' ? ' · RECORDING' : ''}`
+    }
+  })
+
+  // The preview has no head pose: the rig stays at the origin.
+  useEffect(() => {
+    if (rig.current) rig.current.visible = preview
+    centre.current = !preview
+  }, [preview])
+
+  const layers = useXR(st => st.session?.enabledFeatures?.includes('layers') ?? false)
+  const useLayer = !preview && s.stream === 'layer'
+  const streamNote = preview ? 'PREVIEW: mesh Stream only' : useLayer ? (layers ? 'STREAM ON A COMPOSITOR LAYER' : 'NO LAYERS FEATURE: LAYER MODE IS A FALLBACK MESH') : 'STREAM AS A UIKIT MESH'
+  const selectedSlot = selItem?.slot ?? null
+  const exit = () => {
+    log('exit-press', {})
+    if (preview) location.href = '/'
+    else void session?.end()
+  }
+
+  return (
+    <group ref={rig} visible={preview}>
+      {s.dimmer > 0 && (
+        <mesh renderOrder={-1000}>
+          <sphereGeometry args={[3, 32, 16]} />
+          <meshBasicMaterial color="#000" side={BackSide} transparent opacity={s.dimmer} depthWrite={false} toneMapped={false} />
+        </mesh>
+      )}
+      <Rings />
+      <TopArc usage={fleet?.usage} now={p.now} />
+      {useLayer ? <StreamLayer y={CORE_Y} target={target} data={data} plate={s.plate} /> : <StreamMesh y={CORE_Y} target={target} data={data} plate={s.plate} />}
+      <VoiceArc voice={voice} level={level} />
+      <Iris name={irisName} sub={irisSub} colour={irisColour} voice={voice} level={level} irisRef={irisRef} handlers={{ onDown: () => startHold('iris'), onUp: () => endHold('iris') }} />
+      <HeardLine voice={voice} />
+      <CardView voice={voice} fleetIds={fleetIds} />
+      <Alarm lines={p.alarms} />
+      <Tiles items={items} selected={p.selected} pulse={pulse} tileRefs={tileRefs} onPick={id => p.onSelect(p.selected === id ? null : id)} />
+      <Tether slot={selectedSlot} />
+      <Controls streamNote={streamNote} perf={perf} mic={mic} preview={preview} onRecenter={() => void (centre.current = true)} onFakeNeed={fakeNeed} onExit={exit} />
+      {preview && <PreviewCamera />}
+      <Hooks fakeNeed={fakeNeed} startHold={startHold} endHold={endHold} voice={voiceRef} />
+    </group>
+  )
+}
+
+/** Desktop preview: right-drag orbits about the Core, the wheel zooms. ?yaw=&pitch=&fov= set a view. */
+function PreviewCamera() {
+  const camera = useThree(s => s.camera)
+  const dom = useThree(s => s.gl.domElement)
+  const view = useRef(initialView())
+  useEffect(() => {
+    let drag: { x: number; y: number } | null = null
+    const down = (e: PointerEvent) => {
+      if (e.button !== 2) return
+      drag = { x: e.clientX, y: e.clientY }
+    }
+    const move = (e: PointerEvent) => {
+      if (!drag) return
+      view.current.yaw -= (e.clientX - drag.x) * 0.2
+      view.current.pitch = Math.max(-60, Math.min(60, view.current.pitch - (e.clientY - drag.y) * 0.2))
+      drag = { x: e.clientX, y: e.clientY }
+    }
+    const up = () => void (drag = null)
+    const wheel = (e: WheelEvent) => {
+      view.current.fov = Math.max(25, Math.min(100, view.current.fov + e.deltaY * 0.03))
+    }
+    const menu = (e: Event) => e.preventDefault()
+    dom.addEventListener('pointerdown', down)
+    addEventListener('pointermove', move)
+    addEventListener('pointerup', up)
+    dom.addEventListener('wheel', wheel, { passive: true })
+    dom.addEventListener('contextmenu', menu)
+    return () => {
+      dom.removeEventListener('pointerdown', down)
+      removeEventListener('pointermove', move)
+      removeEventListener('pointerup', up)
+      dom.removeEventListener('wheel', wheel)
+      dom.removeEventListener('contextmenu', menu)
+    }
+  }, [dom])
+  const pivot = useMemo(() => new Vector3(0, CORE_Y, -RADIUS), [])
+  const offset = useMemo(() => new Vector3(), [])
+  const e = useMemo(() => new Euler(0, 0, 0, 'YXZ'), [])
+  useFrame(() => {
+    const v = view.current
+    e.set((v.pitch * Math.PI) / 180, (v.yaw * Math.PI) / 180, 0)
+    offset.set(0, -CORE_Y, RADIUS).applyEuler(e)
+    camera.position.copy(pivot).add(offset)
+    camera.quaternion.setFromEuler(e)
+    const pc = camera as typeof camera & { fov?: number; updateProjectionMatrix?: () => void }
+    if (pc.fov !== undefined && pc.fov !== v.fov) {
+      pc.fov = v.fov
+      pc.updateProjectionMatrix?.()
+    }
+  })
+  return null
+}
+
+function initialView(): { yaw: number; pitch: number; fov: number } {
+  const q = new URLSearchParams(location.search)
+  const n = (k: string, d: number) => {
+    const v = Number(q.get(k))
+    return q.has(k) && Number.isFinite(v) ? v : d
+  }
+  return { yaw: n('yaw', 0), pitch: n('pitch', 0), fov: n('fov', 62) }
+}
+
+/** Test hooks for the headless checks, on localhost only. */
+function Hooks({ fakeNeed, startHold, endHold, voice }: { fakeNeed: () => void; startHold: (by: 'iris' | 'grip') => void; endHold: (by: 'iris' | 'grip' | 'any') => void; voice: MutableRefObject<Voice> }) {
+  const r = useRef({ fakeNeed, startHold, endHold })
+  r.current = { fakeNeed, startHold, endHold }
+  useEffect(() => {
+    if (!LOCAL) return
+    ;(window as unknown as { __instrument?: unknown }).__instrument = {
+      fakeNeed: () => r.current.fakeNeed(),
+      holdStart: (by: 'iris' | 'grip' = 'grip') => r.current.startHold(by),
+      holdEnd: (by: 'iris' | 'grip' | 'any' = 'any') => r.current.endHold(by),
+      setSetting,
+      settings: () => settings.current,
+      session: () => store.getState().session ?? null,
+      flush: () => flush(),
+      leakProbe,
+      /** Drops the open mic, so the next hold opens it afresh (Chrome's fake mic file restarts with each capture). */
+      releaseMic: () => voice.current.recorder.release(),
+    }
+  }, [])
+  return null
+}

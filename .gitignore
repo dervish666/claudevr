@@ -1,0 +1,17 @@
+# dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# local state: certificates, pairing token, probe log, local config
+.local/
+*.pem
+*.key
+*.crt
+claudevr.local.json
+.env
+.env.*
+
+# editor and OS noise
+.DS_Store
+*.log

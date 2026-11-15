@@ -1,0 +1,40 @@
+/* Dark only: light backgrounds bleed in passthrough. Read at arm's length,
+   so the base size is large and every target is at least 64px tall. */
+:root {
+  color-scheme: dark;
+  --bg: #07090c;
+  --panel: #10151b;
+  --panel-2: #161d25;
+  --line: #24303c;
+  --text: #e8eef4;
+  --muted: #9fb0bf;
+  --accent: #38bdf8;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --ask: #c084fc;
+  --radius: 18px;
+  --gap: 20px;
+  --hit: 64px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 24px;
+  line-height: 1.35;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { min-height: 100vh; padding: 24px; }
+h1 { font-size: 2rem; margin: 0 0 12px; }
+h2 { font-size: 1.3rem; margin: 0 0 12px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+a { color: var(--accent); }
+button, input { font: inherit; color: inherit; }
+button.big, .big {
+  min-height: var(--hit); padding: 14px 28px; border-radius: var(--radius);
+  border: 2px solid var(--accent); background: #0c2a3a; cursor: pointer; font-weight: 600;
+}
+button.big:disabled { opacity: 0.6; }
+input {
+  min-height: var(--hit); padding: 12px 18px; border-radius: 12px; border: 2px solid var(--line);
+  background: var(--panel-2); width: 100%; font-family: ui-monospace, Menlo, monospace;
+}
+:focus-visible { outline: 4px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 700px) { :root { font-size: 18px; } body { padding: 16px; } }

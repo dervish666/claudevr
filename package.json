@@ -1,0 +1,26 @@
+{
+  "name": "claudevr",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "workspaces": [
+    "bridge",
+    "client"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "npm run build && node bridge/src/main.ts",
+    "demo": "npm run build && CLAUDEVR_BACKEND=fake node bridge/src/main.ts",
+    "build": "npm run build -w client",
+    "cert": "node scripts/make-cert.mjs --force",
+    "test": "node --test 'bridge/test/**/*.test.ts'",
+    "typecheck": "tsc -p bridge && tsc -p client",
+    "stt:setup": "node scripts/setup-stt.mjs",
+    "fonts": "node scripts/make-fonts.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
