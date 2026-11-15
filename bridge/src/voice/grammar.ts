@@ -14,6 +14,7 @@
 //   tell X <message>               "tell X to ...", "ask X ...", "message X ..."
 //   confirm / cancel               only while a card is armed ("send", "yes" / "cancel", "no")
 //   dispatcher                     "dispatcher", "back to the dispatcher": drop the selection
+//   voice X                        "voice X", "change voice to X", "use the X voice"; "voices" lists them
 //   anything else, 3+ words        a message for the dispatcher, if the fleet has one
 //   anything else, reader open     a message for the session being read, never the dispatcher
 //
@@ -278,7 +279,33 @@ export interface InterpretInput {
   context: VoiceContext
   /** The session open in the reader, if any. Speech that names no session goes to it. */
   focusId?: string | null
+  /** The speaking voices the bridge can change between, and the current one. Empty: it has one voice. */
+  voices?: readonly { name: string; heardAs: readonly string[] }[]
+  voice?: string | null
   now: number
+}
+
+const VOICE_LIST = /^(?:(?:what|which) voices?(?: are there| do you have| have you got| can you do)?|(?:list|show)(?: me)?(?: the| your)? voices|voices)$/
+/** Explicit: the words say it is about the voice, so a name that matches nothing gets an answer. */
+const VOICE_SET = [/^(?:(?:change|switch|set)(?: the| your)? voice to|(?:use|try|do)(?: the)? voice|voice)(?: the)? (.+?)(?: voice)?$/, /^(?:use|try|do|be|become|switch to|change to)(?: the)? (.+) voice$/]
+/** Loose: "glados voice". Taken only when the name is a voice. */
+const VOICE_LOOSE = /^(.+) voice$/
+
+/** "voice X" and "voices". Null when the words are not about the voice. */
+export function voiceCommand(text: string, input: Pick<InterpretInput, 'voices' | 'voice'>): Interpretation | null {
+  const voices = input.voices ?? []
+  const names = voices.map(v => v.name)
+  const now = input.voice ? ` Now: ${input.voice}.` : ''
+  if (VOICE_LIST.test(text)) return { kind: 'voice', voice: null, say: names.length ? `Voices: ${names.join(', ')}.${now}` : 'This bridge has one voice.' }
+  const explicit = VOICE_SET.map(r => r.exec(text)?.[1]).find(Boolean)
+  const heard = explicit ?? VOICE_LOOSE.exec(text)?.[1]
+  if (!heard) return null
+  const r = resolve(heard, voices.map(v => ({ sessionId: v.name, callsign: v.name, heardAs: [...v.heardAs] })))
+  if (r.ok) return { kind: 'voice', voice: r.target.callsign, say: r.target.callsign === input.voice ? `Already ${r.target.callsign}.` : `Voice: ${r.target.callsign}.` }
+  // Many words after "voice" are a sentence that happens to start that way, not a name.
+  if (!explicit || heard.split(' ').length > 3) return null
+  if (!names.length) return { kind: 'voice', voice: null, say: 'This bridge has one voice.' }
+  return { kind: 'voice', voice: null, say: r.why === 'ambiguous' ? `Which voice: ${r.candidates.map(c => c.callsign).join(', or ')}?` : `No voice called ${heard}. There is ${names.join(', ')}.` }
 }
 
 const capitalise = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s)
@@ -342,6 +369,13 @@ export function interpret(input: InterpretInput): Interpretation {
   if (!answerToFocus) {
     if (CONFIRM.has(text)) return input.context === 'confirm' ? { kind: 'confirm', say: 'Sending.' } : { kind: 'unknown', say: 'Nothing to send.' }
     if (CANCEL.has(text)) return { kind: 'cancel', say: input.context === 'none' ? 'Nothing to cancel.' : 'Cancelled. Nothing sent.' }
+  }
+
+  // About the bridge's own voice, so it needs no fleet. Not while a card is
+  // armed or a name is being asked for: those words belong to the message.
+  if (input.context === 'none') {
+    const v = voiceCommand(text, input)
+    if (v) return v
   }
 
   if (!fleet) return { kind: 'unknown', say: 'No fleet data yet, so I cannot act on that.' }

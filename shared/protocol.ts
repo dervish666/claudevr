@@ -214,6 +214,8 @@ export type Interpretation =
   | { kind: 'target'; sessionId: string; callsign: string; say: string }
   | { kind: 'confirm'; say: string }
   | { kind: 'cancel'; say: string }
+  /** "voice X": the bridge has already changed its speaking voice to `voice`. Null: no change, `say` lists the voices or says why not. */
+  | { kind: 'voice'; voice: string | null; say: string }
   | { kind: 'unknown'; say: string }
 
 /** POST /api/transcribe answers this, whatever went wrong. */

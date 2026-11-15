@@ -2,6 +2,7 @@
 // with big labelled buttons. Sam operates it without a manual, so every
 // toggle names itself and shows which option is on.
 
+import { memo } from 'react'
 import { Container, Text } from '@react-three/uikit'
 import type { Signal } from '@preact/signals-core'
 import { setSetting, useSettings, type Settings } from './settings.ts'
@@ -84,9 +85,11 @@ export interface ControlsProps {
   onExit: () => void
 }
 
-export function Controls({ streamNote, perf, mic, preview, onRecenter, onFakeNeed, onExit }: ControlsProps) {
+/** Memoised: the callbacks it is handed are stable, so it renders again only when a toggle or the stream note changes. */
+export const Controls = memo(function Controls({ streamNote, perf, mic, preview, onRecenter, onFakeNeed, onExit }: ControlsProps) {
+  // y is low enough to clear the bottom tile row's age line on the right wing.
   return (
-    <group position={[0.5, -0.56, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
+    <group position={[0.5, -0.66, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
       <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={8} width={560} padding={16} borderRadius={10} borderWidth={2} borderColor={C.cyanDim} backgroundColor={rgba(6, 9, 11, 0.94)}>
         <Container flexDirection="row" alignItems="baseline" gap={10}>
           <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={C.cyan}>
@@ -131,4 +134,4 @@ export function Controls({ streamNote, perf, mic, preview, onRecenter, onFakeNee
       </Container>
     </group>
   )
-}
+})

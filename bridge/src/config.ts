@@ -32,10 +32,22 @@ export interface SttConfig {
   maxBytes: number
 }
 
+export interface FishConfig {
+  /** fish.audio's speech model, sent as the `model` header. */
+  model: string
+  voices: { name: string; id: string; heardAs: string[] }[]
+  /** From FISH_API_KEY, or the key file. Null when neither has one. */
+  apiKey: string | null
+  /** Where the key was looked for, for the message when there is none. */
+  keyHint: string
+}
+
 export interface TtsConfig {
-  provider: 'say' | 'off'
+  provider: 'say' | 'fish' | 'off'
+  /** A macOS voice for `say`; the name of one of fish.voices for `fish`. */
   voice: string
   maxChars: number
+  fish: FishConfig | null
 }
 
 const STT_MODELS = { parakeet: 'mlx-community/parakeet-tdt-0.6b-v3', whisper: 'small.en' }
@@ -55,6 +67,10 @@ export interface Config {
   stateDir: string
   clientDir: string
   fixturesDir: string
+  /** The fake backend's fleet: a file name inside fixturesDir. */
+  fakeFleet: string
+  /** The fake backend's demo motion, one change every this many ms; 0 for none. */
+  fakeLiveMs: number
   sendsPerMinute: number
   sendsPerHour: number
   dashweb: DashwebConfig | null
@@ -132,6 +148,39 @@ export function parseCallsigns(v: unknown): CallsignOverride[] {
   })
 }
 
+/**
+ * "fish": { "model": "s2.1-pro", "voices": { "jarvis": "<id>", "glados": { "id": "<id>", "heardAs": ["gladys"] } } }
+ * The key comes from FISH_API_KEY or a one-line file (fish.apiKeyFile,
+ * default <state dir>/fish-api-key), never from the config file itself.
+ */
+export function parseFish(f: Record<string, unknown>, env: Env, stateDir: string): FishConfig {
+  const voices = Object.entries(obj(f.voices)).map(([raw, val]) => {
+    const name = raw.trim().toLowerCase()
+    const o = typeof val === 'string' ? { id: val } : obj(val)
+    const id = typeof o.id === 'string' ? o.id.trim() : ''
+    if (!/^[a-z][a-z ]{0,30}$/.test(name)) throw new Error(`tts.fish.voices: a voice name is one to a few plain words, got ${JSON.stringify(raw)}`)
+    if (!/^[0-9a-f]{32}$/.test(id)) throw new Error(`tts.fish.voices.${name}: the id is fish.audio's 32 hex characters for the voice, got ${JSON.stringify(o.id)}`)
+    return { name, id, heardAs: list(o.heardAs) }
+  })
+  if (!voices.length) throw new Error('the fish text-to-speech provider needs tts.fish.voices: { "name": "<fish.audio voice id>" }')
+  const keyFile = absolute(typeof f.apiKeyFile === 'string' ? f.apiKeyFile : join(stateDir, 'fish-api-key'), REPO_ROOT)
+  let apiKey = (env.CLAUDEVR_FISH_API_KEY ?? env.FISH_API_KEY ?? '').trim() || null
+  if (!apiKey) {
+    try {
+      apiKey = readFileSync(keyFile, 'utf8').trim() || null
+    } catch (err) {
+      // A missing key file is reported by the provider, with this path; anything else is a real fault.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${keyFile}: ${(err as Error).message}`)
+    }
+  }
+  return { model: String(env.CLAUDEVR_FISH_MODEL ?? f.model ?? 's2.1-pro'), voices, apiKey, keyHint: `set FISH_API_KEY or put the key in ${keyFile}` }
+}
+
+function fixtureName(v: string): string {
+  if (!/^[\w.-]+\.json$/.test(v) || v.startsWith('.')) throw new Error(`CLAUDEVR_FAKE_FLEET must be a .json file name inside the fixtures directory, got ${JSON.stringify(v)}`)
+  return v
+}
+
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T, name: string): T {
   if (v === undefined || v === '') return fallback
   if (!allowed.includes(v as T)) throw new Error(`${name} must be one of ${allowed.join(', ')}, got ${JSON.stringify(v)}`)
@@ -175,11 +224,15 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     maxSeconds: int(env.CLAUDEVR_STT_MAX_SECONDS ?? fileStt.maxSeconds, 30, 'stt.maxSeconds'),
     maxBytes: int(fileStt.maxBytes, 2_000_000, 'stt.maxBytes'),
   }
+  const ttsProvider = oneOf(env.CLAUDEVR_TTS ?? fileTts.provider, ['say', 'fish', 'off'] as const, process.platform === 'darwin' ? 'say' : 'off', 'tts.provider')
+  const fish = ttsProvider === 'fish' ? parseFish(obj(fileTts.fish), env, stateDir) : null
   const tts: TtsConfig = {
-    provider: oneOf(env.CLAUDEVR_TTS ?? fileTts.provider, ['say', 'off'] as const, process.platform === 'darwin' ? 'say' : 'off', 'tts.provider'),
-    voice: String(env.CLAUDEVR_TTS_VOICE ?? fileTts.voice ?? 'Daniel'),
+    provider: ttsProvider,
+    voice: String(env.CLAUDEVR_TTS_VOICE ?? fileTts.voice ?? (fish ? fish.voices[0]!.name : 'Daniel')),
     maxChars: int(fileTts.maxChars, 600, 'tts.maxChars'),
+    fish,
   }
+  if (fish && !fish.voices.some(v => v.name === tts.voice)) throw new Error(`tts.voice is ${JSON.stringify(tts.voice)}, which is not one of tts.fish.voices (${fish.voices.map(v => v.name).join(', ')})`)
 
   return {
     backend,
@@ -190,6 +243,8 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     stateDir,
     clientDir: absolute(env.CLAUDEVR_CLIENT_DIR ?? 'client/dist', REPO_ROOT),
     fixturesDir: absolute(env.CLAUDEVR_FIXTURES ?? 'fixtures', REPO_ROOT),
+    fakeFleet: fixtureName(env.CLAUDEVR_FAKE_FLEET ?? 'demo-fleet.json'),
+    fakeLiveMs: int(env.CLAUDEVR_FAKE_LIVE_MS, 0, 'CLAUDEVR_FAKE_LIVE_MS'),
     sendsPerMinute: int(env.CLAUDEVR_SENDS_PER_MINUTE ?? file.sendsPerMinute, 6, 'sendsPerMinute'),
     sendsPerHour: int(env.CLAUDEVR_SENDS_PER_HOUR ?? file.sendsPerHour, 60, 'sendsPerHour'),
     dashweb,

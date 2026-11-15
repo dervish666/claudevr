@@ -346,6 +346,7 @@ export function useVoice(o: VoiceOptions): Voice {
           return
         case 'status':
         case 'limits':
+        case 'voice':
         case 'unknown':
           speak(i.say)
           return

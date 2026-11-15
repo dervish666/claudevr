@@ -22,15 +22,21 @@ export class FakeAdapter implements SessionBackend {
   private readonly poller: Poller
   private readonly now: () => number
 
-  constructor(fleet: Fleet, opts: { pollMs?: number; now?: () => number; log?: (...a: unknown[]) => void } = {}) {
+  private live: NodeJS.Timeout | null = null
+  private liveStep = 0
+
+  constructor(fleet: Fleet, opts: { pollMs?: number; now?: () => number; log?: (...a: unknown[]) => void; file?: string } = {}) {
     this.fleet = structuredClone(fleet)
     this.now = opts.now ?? Date.now
     this.poller = new Poller(() => this.list(), opts.pollMs ?? 2000, opts.log ?? ((...a) => console.log('[fake]', ...a)))
   }
 
-  /** The demo fleet in fixtures/, with its times moved to just now so ages read sensibly. */
+  /**
+   * A demo fleet from fixtures/ (`demo-fleet.json` unless `opts.file` names
+   * another), with its times moved to just now so ages read sensibly.
+   */
   static fromFixtures(dir: string, opts: ConstructorParameters<typeof FakeAdapter>[1] = {}): FakeAdapter {
-    const fleet = JSON.parse(readFileSync(join(dir, 'demo-fleet.json'), 'utf8')) as Fleet
+    const fleet = JSON.parse(readFileSync(join(dir, opts.file ?? 'demo-fleet.json'), 'utf8')) as Fleet
     const shift = (opts.now ?? Date.now)() - fleet.at
     const move = (t: number | null) => (t === null ? null : t + shift)
     fleet.at += shift
@@ -103,7 +109,50 @@ export class FakeAdapter implements SessionBackend {
     return Promise.reject(new UnsupportedError(this.name, 'approve'))
   }
 
+  /**
+   * Demo motion: every `everyMs` one session that is not the dispatcher
+   * says something new, and every third step one stops working or starts
+   * again, so the instrument's reply cards have something to show. Off
+   * unless asked for (CLAUDEVR_FAKE_LIVE_MS).
+   */
+  startLive(everyMs: number): void {
+    if (this.live) return
+    this.live = setInterval(() => this.step(), everyMs)
+    this.live.unref()
+  }
+
+  /** One step of the demo motion; public so a test can drive it without a timer. */
+  step(): void {
+    const agents = this.fleet.sessions.filter(s => s.kind !== 'dispatcher')
+    if (!agents.length) return
+    const n = this.liveStep++
+    const s = agents[n % agents.length]!
+    const at = this.now()
+    if (n % 3 === 2 && (s.state === 'working' || s.state === 'thinking')) {
+      s.state = 'idle'
+      s.action = null
+    } else if (n % 3 === 2 && s.state === 'idle') {
+      s.state = 'working'
+      s.action = 'Bash: Run the tests again'
+    }
+    // Offset by the lap, so a session does not get the same line on each pass.
+    const line = LIVE_LINES[(n + Math.floor(n / agents.length)) % LIVE_LINES.length]!
+    s.messages = [...s.messages, { at, text: line }].slice(-6)
+    s.lastLine = line.split('\n')[0]!
+    s.activeAt = at
+  }
+
   close(): void {
     this.poller.stop()
+    if (this.live) clearInterval(this.live)
+    this.live = null
   }
 }
+
+const LIVE_LINES = [
+  'Tests pass: 214 of 214.\nPushed the branch; the PR is up for review.',
+  'Found the cause: the cache key ignored the locale.\nFixing it now, then a regression test.',
+  'Two flaky tests in the suite, both timing out on CI only.\nI marked them and opened an issue.',
+  'Done. The export now streams instead of building the file in memory.\nPeak memory went from 1.4 GB to 90 MB.',
+  'I need the staging credentials to go further.\nThey are not in the vault.',
+]

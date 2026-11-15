@@ -16,7 +16,7 @@ import { OrthographicCamera, SRGBColorSpace, type WebGLRenderTarget } from 'thre
 import type { Session, SessionTranscript, Turn } from '../../../shared/protocol.ts'
 import { blocks, fit, type Block } from './text.ts'
 import { C, DEG, FONTS, STATE_WORDS, stateColour, rgba } from './theme.ts'
-import { log } from './telemetry.ts'
+import { countRender, log } from './telemetry.ts'
 
 export const STREAM_W = 907
 export const STREAM_H = 505
@@ -40,6 +40,7 @@ export interface StreamData {
   turns: Turn[] | null
   problem: string | null
   loaded: boolean
+  /** Epoch ms the turns last changed. */
   at: number | null
 }
 
@@ -64,10 +65,14 @@ export function useTranscript(token: string, target: Target): StreamData {
         if (!live) return
         if (r.ok && Array.isArray(body.turns)) {
           const next = body.turns
-          // A re-read that says the same thing keeps the same array, so the panel does not lay itself out again every few seconds.
-          setData(d => ({ key, turns: d.key === key && d.turns && sameTurns(d.turns, next) ? d.turns : next, problem: null, loaded: true, at: Date.now() }))
+          // A re-read that says the same thing keeps the same array (so the panel does not lay itself out again
+          // every few seconds) and the same object (so nothing that draws it renders again at all).
+          setData(d => (d.key === key && d.loaded && !d.problem && d.turns && sameTurns(d.turns, next) ? d : { key, turns: d.key === key && d.turns && sameTurns(d.turns, next) ? d.turns : next, problem: null, loaded: true, at: Date.now() }))
         }
-        else setData(d => ({ ...d, key, loaded: true, problem: `${r.status === 404 || r.status === 501 ? 'Short clips only' : 'FULL REPLIES UNAVAILABLE'}: ${body.error ?? `HTTP ${r.status}`}` }))
+        else {
+          const problem = `${r.status === 404 || r.status === 501 ? 'Short clips only' : 'FULL REPLIES UNAVAILABLE'}: ${body.error ?? `HTTP ${r.status}`}`
+          setData(d => (d.key === key && d.loaded && d.problem === problem ? d : { ...d, key, loaded: true, problem }))
+        }
       } catch (err) {
         console.error('instrument: transcript read failed:', err)
         if (live) setData(d => ({ ...d, key, loaded: true, problem: `FULL REPLIES UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` }))
@@ -103,6 +108,7 @@ interface ContentProps {
 
 /** The uikit tree both views draw. */
 export const StreamContent = memo(function StreamContent({ target, data, plate, sizeX, sizeY, pixelSize }: ContentProps) {
+  countRender('stream')
   const scrollRef = useRef<any>(null)
   const stick = useRef(true)
   const opacity = useMemo(() => signal(0), [])

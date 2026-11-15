@@ -29,7 +29,7 @@ import { createServer, type Server } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { BackendStatus, BuildInfo, Fleet, ServerMessage, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
+import type { BackendStatus, BuildInfo, Fleet, Interpretation, ServerMessage, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
 import { ipAllowed, normaliseIp, originOk, RateLimiter, tokenMatches, tokenOf, WS_PROTOCOL } from './gate.ts'
 import { SendRefused, UnsupportedError, type SessionBackend } from './backend/types.ts'
 import { relabelFleet, type CallsignOverride } from './backend/callsign.ts'
@@ -170,7 +170,7 @@ export function createBridge(o: BridgeOptions): Bridge {
   let status: BackendStatus = { name: o.backend.name, capabilities: o.backend.capabilities, ok: false, error: 'no read yet', lastOkAt: null }
   const refusedIps = new Set<string>()
   const stt = o.stt ?? new NoStt()
-  const tts = o.tts ?? new NoTts()
+  const tts: TtsProvider = o.tts ?? new NoTts()
   const ffmpeg = o.ffmpeg ?? 'ffmpeg'
   const clipMaxSeconds = o.clipMaxSeconds ?? 30
   const clipMaxBytes = o.clipMaxBytes ?? 2_000_000
@@ -249,7 +249,7 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (path === '/api/interpret' && req.method === 'POST') {
       const body = asObject(await readBody(req, JSON_MAX))
       if (typeof body.text !== 'string' || body.text.length > TEXT_MAX) return sendJson(res, 400, { error: `text: the words to interpret, at most ${TEXT_MAX} characters` })
-      return sendJson(res, 200, { interpretation: interpret({ transcript: body.text, fleet: lastFleet, heardAs, context: contextOf(body.context), focusId: focusOf(body.focus), now: Date.now() }) })
+      return sendJson(res, 200, { interpretation: meaning(body.text, contextOf(body.context), focusOf(body.focus)) })
     }
     if (path === '/api/speak' && req.method === 'POST') return speakRoute(req, res)
     return sendJson(res, 404, { error: 'no such route' })
@@ -326,10 +326,24 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (!text.trim()) return fail(422, { reason: 'no-words', error: `heard sound (loudest ${lv.peakDb} dBFS) but no words in it`, audioMs, peakDb: lv.peakDb })
     const url = new URL(req.url ?? '/', 'https://bridge')
     const transcript: Transcript = { ok: true, text: text.trim(), provider: stt.name, audioMs, sttMs, totalMs: Date.now() - t0 }
-    const interpretation = interpret({ transcript: transcript.text, fleet: lastFleet, heardAs, context: contextOf(url.searchParams.get('context')), focusId: focusOf(url.searchParams.get('focus')), now: Date.now() })
+    const interpretation = meaning(transcript.text, contextOf(url.searchParams.get('context')), focusOf(url.searchParams.get('focus')))
     log(`stt: ${ip}: ${audioMs} ms clip, ${sttMs} ms model, ${transcript.totalMs} ms total -> ${interpretation.kind}`)
     const reply: VoiceReply = { transcript, interpretation }
     return sendJson(res, 200, reply)
+  }
+
+  /** The grammar's reading of the words. "voice X" is acted on here, so the reply is already spoken in the new voice. */
+  function meaning(text: string, context: VoiceContext, focusId: string | null): Interpretation {
+    const i = interpret({ transcript: text, fleet: lastFleet, heardAs, context, focusId, voices: tts.voices?.() ?? [], voice: tts.voice?.() ?? null, now: Date.now() })
+    if (i.kind !== 'voice' || !i.voice) return i
+    try {
+      if (!tts.select) throw new Error('this text-to-speech provider has one voice')
+      tts.select(i.voice)
+      return i
+    } catch (err) {
+      log('tts: could not change voice:', (err as Error).message)
+      return { kind: 'voice', voice: null, say: `Could not change voice: ${(err as Error).message}.` }
+    }
   }
 
   async function speakRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {

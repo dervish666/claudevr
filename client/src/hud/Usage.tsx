@@ -4,6 +4,7 @@
 // source gone quiet keeps its value, dimmed, with its age.
 
 import type { ContextUse, Figure, LimitWindow, Usage } from '../../../shared/protocol.ts'
+import { hhmm } from '../time.ts'
 import { age } from './useBridge.ts'
 
 /** Colour steps for a percentage used: under 60 calm, 60 to 79 amber, 80 and over red. */
@@ -40,6 +41,7 @@ export function LimitsStrip({ usage, now }: { usage: Usage | undefined; now: num
     return (
       <section className="limits" aria-label="Usage limits">
         <Tile label="LIMITS" value="not available" cls="na" sub="this bridge sends no usage figures" />
+        <Tile label="LOCAL" value={hhmm(new Date(now))} cls="clock" sub={null} />
       </section>
     )
   }
@@ -69,6 +71,7 @@ export function LimitsStrip({ usage, now }: { usage: Usage | undefined; now: num
       ) : (
         <Tile label="TODAY" value={`$${todayUsd.value.toFixed(2)}`} cls={`spend${todayUsd.stale ? ' stale' : ''}`} sub={staleSub(todayUsd, now) ?? 'API-rate cost'} title={todayUsd.note ?? undefined} />
       )}
+      <Tile label="LOCAL" value={hhmm(new Date(now))} cls="clock" sub={null} />
     </section>
   )
 }

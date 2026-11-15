@@ -169,7 +169,7 @@ function Countdown({ sendAt }: { sendAt: number }) {
     <span className="rb-count" role="timer" aria-label={`Sends in ${Math.ceil(left / 1000)} seconds`}>
       <span className="rb-count-n">Sends in {Math.ceil(left / 1000)}</span>
       <span className="rb-bar">
-        <span className="rb-bar-fill" style={{ width: `${Math.min(100, (left / SEND_COUNTDOWN_MS) * 100)}%` }} />
+        <span className="rb-bar-fill" style={{ transform: `scaleX(${Math.min(1, left / SEND_COUNTDOWN_MS)})` }} />
       </span>
     </span>
   )

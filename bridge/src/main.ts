@@ -1,6 +1,6 @@
 // Starts the bridge: config, certificate, pairing token, backend, server.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, REPO_ROOT } from './config.ts'
 import { ensureCert } from './cert.ts'
@@ -10,7 +10,7 @@ import { DashwebAdapter } from './backend/dashweb/adapter.ts'
 import { FakeAdapter } from './backend/fake.ts'
 import type { SessionBackend } from './backend/types.ts'
 import { HelperStt, NoStt, type SttProvider } from './voice/stt.ts'
-import { NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
+import { FishTts, NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a)
 
@@ -19,7 +19,14 @@ function main(): void {
   const certs = ensureCert(join(cfg.stateDir, 'certs'), log)
   const { token, created } = loadOrCreateToken(join(cfg.stateDir, 'pairing-token'), log)
 
-  const backend: SessionBackend = cfg.backend === 'dashweb' && cfg.dashweb ? new DashwebAdapter(cfg.dashweb) : FakeAdapter.fromFixtures(cfg.fixturesDir)
+  let backend: SessionBackend
+  if (cfg.backend === 'dashweb' && cfg.dashweb) backend = new DashwebAdapter(cfg.dashweb)
+  else {
+    const fake = FakeAdapter.fromFixtures(cfg.fixturesDir, { file: cfg.fakeFleet })
+    if (cfg.fakeLiveMs > 0) fake.startLive(cfg.fakeLiveMs)
+    log(`fake backend: ${cfg.fakeFleet}${cfg.fakeLiveMs > 0 ? `, a demo change every ${cfg.fakeLiveMs} ms` : ''}`)
+    backend = fake
+  }
 
   const stt: SttProvider =
     cfg.stt.provider === 'off'
@@ -30,6 +37,35 @@ function main(): void {
     const say = new SayTts({ voice: cfg.tts.voice, maxChars: cfg.tts.maxChars, ffmpeg: cfg.ffmpeg, log: (...a) => log('[tts]', ...a) })
     void say.check().then(st => log(`[tts] ${st.provider}: ${st.ok ? 'ready' : `unavailable: ${st.error}`}`))
     tts = say
+  } else if (cfg.tts.provider === 'fish' && cfg.tts.fish) {
+    const f = cfg.tts.fish
+    // macOS `say` stands in when fish.audio cannot speak.
+    let fallback: SayTts | undefined
+    if (process.platform === 'darwin') {
+      fallback = new SayTts({ voice: 'Daniel', maxChars: cfg.tts.maxChars, ffmpeg: cfg.ffmpeg, log: (...a) => log('[tts]', ...a) })
+      void fallback.check()
+    }
+    // The voice last chosen by speech wins over the config, so it survives a restart.
+    const voiceFile = join(cfg.stateDir, 'tts-voice')
+    let voice = cfg.tts.voice
+    try {
+      const kept = readFileSync(voiceFile, 'utf8').trim()
+      if (f.voices.some(v => v.name === kept)) voice = kept
+      else log(`[tts] ${voiceFile} names ${JSON.stringify(kept)}, which is not a configured voice; using ${voice}`)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`[tts] could not read ${voiceFile}: ${(err as Error).message}`)
+    }
+    const remember = (name: string) => {
+      try {
+        writeFileSync(voiceFile, name + '\n')
+      } catch (err) {
+        log(`[tts] could not save the voice choice to ${voiceFile}: ${(err as Error).message}`)
+      }
+    }
+    const fishTts = new FishTts({ apiKey: f.apiKey, keyHint: f.keyHint, model: f.model, voices: f.voices, voice, maxChars: cfg.tts.maxChars, fallback, remember, log: (...a) => log('[tts]', ...a) })
+    const st = fishTts.status()
+    log(`[tts] ${st.provider}${st.ok ? '' : `: unavailable: ${st.error}`}; voices: ${f.voices.map(v => v.name).join(', ')}`)
+    tts = fishTts
   }
 
   const bridge = createBridge({
@@ -65,7 +101,7 @@ function main(): void {
       `  supports: ${Object.entries(backend.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ')}`,
       `  allowed clients: loopback${cfg.allowIps.length ? ', ' + cfg.allowIps.join(', ') : ' only (set allowIps or CLAUDEVR_ALLOW_IPS for the headset)'}`,
       `  certificate covers: ${certs.names.join(', ')}`,
-      `  speech-to-text: ${cfg.stt.provider === 'off' ? 'off' : `${cfg.stt.provider} (${cfg.stt.model}), loading in the background`}   text-to-speech: ${cfg.tts.provider === 'off' ? 'off' : `say -v ${cfg.tts.voice}`}`,
+      `  speech-to-text: ${cfg.stt.provider === 'off' ? 'off' : `${cfg.stt.provider} (${cfg.stt.model}), loading in the background`}   text-to-speech: ${tts.status().provider}`,
       ...(cfg.callsigns.length ? [`  callsign overrides: ${cfg.callsigns.map(c => `${c.match} -> ${c.callsign}`).join(', ')}`] : []),
       ...(cfg.dev ? ['  dev: open HUDs reload when the client is rebuilt'] : []),
       '',

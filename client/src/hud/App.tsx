@@ -162,7 +162,7 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   const alarms = alarmsOf(bridge, now)
   const stale = alarms.length > 0
   const mod = instrument.mod
-  const instrumentProps = { token, bridge, voice, now, alarms, selected: xrSel, onSelect: setXrSel, immersive, onSessionChange: setXrActive }
+  const instrumentProps = { token, bridge, voice, alarms, selected: xrSel, onSelect: setXrSel, immersive, onSessionChange: setXrActive }
 
   if (PREVIEW)
     return mod ? (

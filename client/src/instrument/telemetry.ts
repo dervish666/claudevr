@@ -89,3 +89,19 @@ export function frameStats(): { n: number; p50: number; p90: number; p99: number
   const total = s.reduce((a, b) => a + b, 0)
   return { n: s.length, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: Math.round(s.at(-1)! * 100) / 100, dropped: s.filter(x => x > 13.9 * 1.5).length, fps: Math.round((s.length / total) * 1000 * 10) / 10 }
 }
+
+// ---------------------------------------------------------------- React renders
+
+/** Renders per component since the last report: the scene should render on a fleet read, not every second. */
+export const renders: Record<string, number> = {}
+
+export function countRender(name: string): void {
+  renders[name] = (renders[name] ?? 0) + 1
+}
+
+/** The counts since the last call, then zeroed. */
+export function takeRenders(): Record<string, number> {
+  const out = { ...renders }
+  for (const k of Object.keys(renders)) renders[k] = 0
+  return out
+}

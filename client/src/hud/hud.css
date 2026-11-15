@@ -156,7 +156,7 @@ button.link { background: none; border: none; color: var(--accent); text-decorat
 .rb-count { display: grid; gap: 8px; min-width: 240px; flex: 1; }
 .rb-count-n { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--warn); }
 .rb-bar { height: 14px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
-.rb-bar-fill { display: block; height: 100%; background: var(--warn); transition: width 100ms linear; }
+.rb-bar-fill { display: block; width: 100%; height: 100%; background: var(--warn); transform-origin: left; transition: transform 100ms linear; }
 .rb-result { font-size: 1.2rem; display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
 .rb-state { font-weight: 800; letter-spacing: 0.05em; }
 .rb-sent { border-color: var(--ok); } .rb-sent .rb-state { color: var(--ok); }
@@ -188,6 +188,7 @@ button.link { background: none; border: none; color: var(--accent); text-decorat
 .lim.lv-warn { border-color: #6b5410; } .lim.lv-warn .lim-value { color: var(--warn); }
 .lim.lv-bad { border-color: var(--bad); background: #2a0d0d; } .lim.lv-bad .lim-value { color: var(--bad); }
 .lim.na .lim-value { font-size: 1.2rem; color: var(--muted); }
+.lim.clock { flex: 0 0 auto; }
 .lim.stale { border-style: dashed; }
 .lim.stale .lim-value { opacity: 0.55; }
 .lim.stale .lim-sub { color: var(--warn); font-weight: 700; }

@@ -1,0 +1,438 @@
+{
+  "at": 1794700000000,
+  "sessions": [
+    {
+      "project": "Workbench",
+      "kind": "dispatcher",
+      "action": null,
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699640000,
+          "text": "Routed the rota export task to Harbour and the parser fix to Quill."
+        },
+        {
+          "at": 1794699760000,
+          "text": "Two tasks open, one waiting on you."
+        }
+      ],
+      "id": "demo-dispatcher",
+      "callsign": "Dispatcher",
+      "title": "Dispatcher",
+      "state": "idle",
+      "activeAt": 1794699760000,
+      "startedAt": 1794682000000,
+      "lastLine": "Two tasks open, one waiting on you.",
+      "context": {
+        "usedPct": 22,
+        "tokens": 44000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "harbour-rota",
+      "kind": "interactive",
+      "action": "Bash: Run the unit tests",
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699280000,
+          "text": "The export now writes one row per shift."
+        },
+        {
+          "at": 1794699820000,
+          "text": "Totals match the old report for March. Running the full suite before I push."
+        }
+      ],
+      "id": "demo-harbour",
+      "callsign": "Harbour",
+      "title": "Tidy Up Rota Export",
+      "state": "working",
+      "activeAt": 1794700000000,
+      "startedAt": 1794694600000,
+      "lastLine": "Totals match the old report for March. Running the full suite before I push.",
+      "context": {
+        "usedPct": 91,
+        "tokens": 182000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "quill",
+      "kind": "interactive",
+      "action": null,
+      "asking": {
+        "text": "The parser can either drop or keep a trailing empty field. Which do you want?",
+        "options": [
+          "Drop it",
+          "Keep it as an empty string"
+        ],
+        "answerAt": null
+      },
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699400000,
+          "text": "Found it: the parser dropped the last field when a line ended with a comma."
+        },
+        {
+          "at": 1794699460000,
+          "text": "The parser can either drop or keep a trailing empty field. Which do you want?"
+        }
+      ],
+      "id": "demo-quill",
+      "callsign": "Quill",
+      "title": "Repair CSV Parser",
+      "state": "asking",
+      "activeAt": 1794699460000,
+      "startedAt": 1794696400000,
+      "lastLine": "The parser can either drop or keep a trailing empty field. Which do you want?",
+      "context": {
+        "usedPct": 38,
+        "tokens": 76000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "Garden",
+      "kind": "interactive",
+      "action": null,
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794697480000,
+          "text": "The weather card refreshes every ten minutes now and keeps the last reading when the API is down."
+        }
+      ],
+      "id": "demo-garden",
+      "callsign": "Garden",
+      "title": "Fix Weather Card Refresh",
+      "state": "idle",
+      "activeAt": 1794697480000,
+      "startedAt": 1794688000000,
+      "lastLine": "The weather card refreshes every ten minutes now and keeps the last reading when the API is down.",
+      "context": null
+    },
+    {
+      "project": "GardenVR",
+      "kind": "interactive",
+      "action": "thinking 20s",
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699880000,
+          "text": "Reading how the store handles conflicts before I suggest a sync strategy."
+        }
+      ],
+      "id": "demo-garden-vr",
+      "callsign": "Garden VR",
+      "title": "Plan Offline Sync",
+      "state": "thinking",
+      "activeAt": 1794700000000,
+      "startedAt": 1794698500000,
+      "lastLine": "Reading how the store handles conflicts before I suggest a sync strategy.",
+      "context": {
+        "usedPct": 64,
+        "tokens": 640000,
+        "windowTokens": 1000000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "kettle",
+      "kind": "T3 codex",
+      "action": null,
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794698980000,
+          "text": "The migration stopped: the backup job needs a credential this machine does not have."
+        }
+      ],
+      "id": "demo-kettle",
+      "callsign": "Kettle",
+      "title": "Migrate Cron Jobs",
+      "state": "failed",
+      "activeAt": 1794698980000,
+      "startedAt": 1794697000000,
+      "lastLine": "The migration stopped: the backup job needs a credential this machine does not have.",
+      "context": {
+        "usedPct": 55,
+        "tokens": 110000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "lantern",
+      "kind": "interactive",
+      "action": null,
+      "asking": null,
+      "canSend": false,
+      "messages": [
+        {
+          "at": 1794692200000,
+          "text": "Every static route now sends a year-long cache header; HTML stays no-store."
+        }
+      ],
+      "id": "demo-lantern",
+      "callsign": "Lantern",
+      "title": "Audit Cache Headers",
+      "state": "done",
+      "activeAt": 1794692200000,
+      "startedAt": 1794689200000,
+      "lastLine": "Every static route now sends a year-long cache header; HTML stays no-store.",
+      "context": null
+    },
+    {
+      "project": "beacon",
+      "kind": "interactive",
+      "action": "Edit: src/limits.ts",
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699910000,
+          "text": "The webhook accepted 400 calls a second in the load test."
+        },
+        {
+          "at": 1794700000000,
+          "text": "Adding a token bucket per sender; tests next."
+        }
+      ],
+      "id": "demo-beacon",
+      "callsign": "Beacon",
+      "title": "Rate Limit The Webhook",
+      "state": "working",
+      "activeAt": 1794700000000,
+      "startedAt": 1794692800000,
+      "lastLine": "Adding a token bucket per sender; tests next.",
+      "context": {
+        "usedPct": 47,
+        "tokens": 94000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "moss",
+      "kind": "interactive",
+      "action": null,
+      "asking": {
+        "text": "Rename amount_cents everywhere, or keep a read-only alias for one release?",
+        "options": [
+          "Rename everywhere",
+          "Keep an alias",
+          "Show me the call sites"
+        ],
+        "answerAt": null
+      },
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699530000,
+          "text": "Seven call sites read amount_cents directly."
+        },
+        {
+          "at": 1794699620000,
+          "text": "Rename amount_cents everywhere, or keep a read-only alias for one release?"
+        }
+      ],
+      "id": "demo-moss",
+      "callsign": "Moss",
+      "title": "Rename Billing Fields",
+      "state": "asking",
+      "activeAt": 1794699620000,
+      "startedAt": 1794692800000,
+      "lastLine": "Rename amount_cents everywhere, or keep a read-only alias for one release?",
+      "context": {
+        "usedPct": 33,
+        "tokens": 66000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "orbit",
+      "kind": "interactive",
+      "action": "thinking 8s",
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794699910000,
+          "text": "Vitest 4 changes how snapshots are written."
+        },
+        {
+          "at": 1794700000000,
+          "text": "Checking which of the 212 snapshots differ only in whitespace."
+        }
+      ],
+      "id": "demo-orbit",
+      "callsign": "Orbit",
+      "title": "Upgrade The Test Runner",
+      "state": "thinking",
+      "activeAt": 1794700000000,
+      "startedAt": 1794692800000,
+      "lastLine": "Checking which of the 212 snapshots differ only in whitespace.",
+      "context": {
+        "usedPct": 72,
+        "tokens": 144000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    },
+    {
+      "project": "tinder",
+      "kind": "interactive",
+      "action": null,
+      "asking": null,
+      "canSend": true,
+      "messages": [
+        {
+          "at": 1794697600000,
+          "text": "Release notes for 2.4 are in CHANGELOG.md, grouped by area."
+        }
+      ],
+      "id": "demo-tinder",
+      "callsign": "Tinder",
+      "title": "Draft Release Notes",
+      "state": "idle",
+      "activeAt": 1794697600000,
+      "startedAt": 1794692800000,
+      "lastLine": "Release notes for 2.4 are in CHANGELOG.md, grouped by area.",
+      "context": {
+        "usedPct": 18,
+        "tokens": 36000,
+        "windowTokens": 200000,
+        "at": 1794699940000
+      }
+    }
+  ],
+  "needs": [
+    {
+      "id": "demo:T-12:Q-1",
+      "kind": "needs-sam",
+      "sessionId": null,
+      "callsign": null,
+      "label": "T-12 harbour",
+      "text": "Pick the retention window for backups: 7 days / 14 days / 30 days",
+      "options": [],
+      "since": 1794694300000,
+      "source": "ledger table"
+    },
+    {
+      "id": "demo:kettle:failed",
+      "kind": "failed",
+      "sessionId": "demo-kettle",
+      "callsign": "Kettle",
+      "label": "Migrate Cron Jobs",
+      "text": "The migration stopped: the backup job needs a credential this machine does not have.",
+      "options": [],
+      "since": 1794698980000,
+      "source": "session"
+    },
+    {
+      "id": "demo:quill:ask",
+      "kind": "question",
+      "sessionId": "demo-quill",
+      "callsign": "Quill",
+      "label": "Repair CSV Parser",
+      "text": "The parser can either drop or keep a trailing empty field. Which do you want?",
+      "options": [
+        "Drop it",
+        "Keep it as an empty string"
+      ],
+      "since": 1794699460000,
+      "source": "dialog"
+    },
+    {
+      "id": "demo:t3:approval",
+      "kind": "approval",
+      "sessionId": null,
+      "callsign": null,
+      "label": "Check Backup Rotation",
+      "text": "1 request waiting in T3",
+      "options": [],
+      "since": null,
+      "source": "T3"
+    },
+    {
+      "id": "demo:moss:ask",
+      "kind": "question",
+      "sessionId": "demo-moss",
+      "callsign": "Moss",
+      "label": "Rename Billing Fields",
+      "text": "Rename amount_cents everywhere, or keep a read-only alias for one release?",
+      "options": [
+        "Rename everywhere",
+        "Keep an alias",
+        "Show me the call sites"
+      ],
+      "since": 1794699620000,
+      "source": "dialog"
+    }
+  ],
+  "ledger": {
+    "ok": true,
+    "error": null,
+    "changedAt": 1794698200000,
+    "rows": [
+      {
+        "task": "T-12",
+        "repo": "harbour",
+        "status": "NEEDS SAM Q-1 (relay): retention window",
+        "lastReport": "plan note written, options 7/14/30 days",
+        "verdict": "NEEDS SAM",
+        "opened": "2026-11-14"
+      },
+      {
+        "task": "T-13",
+        "repo": "quill",
+        "status": "sent 10:05",
+        "lastReport": "working on the trailing-comma case",
+        "verdict": null,
+        "opened": "2026-11-15"
+      }
+    ],
+    "closed": [
+      "T-11 lantern: DONE 09:40. Cache headers audited, one route fixed."
+    ]
+  },
+  "usage": {
+    "todayUsd": {
+      "value": 14.37,
+      "at": 1794700000000,
+      "stale": false,
+      "note": "demo figures"
+    },
+    "limits": {
+      "value": [
+        {
+          "kind": "five_hour",
+          "label": "5-hour",
+          "usedPct": 72,
+          "resetsAt": 1794706600000
+        },
+        {
+          "kind": "seven_day",
+          "label": "Weekly",
+          "usedPct": 46,
+          "resetsAt": 1794973600000
+        }
+      ],
+      "at": 1794699960000,
+      "stale": false,
+      "note": "demo figures"
+    }
+  },
+  "warnings": []
+}

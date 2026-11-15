@@ -27,6 +27,18 @@
   },
   "tts": {
     "provider": "say",
-    "voice": "Daniel"
+    "voice": "Daniel",
+    "fish": {
+      "model": "s2.1-pro",
+      "voices": {
+        "atlas": "0123456789abcdef0123456789abcdef",
+        "juniper": {
+          "id": "fedcba9876543210fedcba9876543210",
+          "heardAs": [
+            "jupiter"
+          ]
+        }
+      }
+    }
   }
 }

@@ -23,6 +23,10 @@ export interface TtsProvider {
   readonly name: string
   status(): TtsStatus
   speak(text: string): Promise<Speech>
+  /** Only a provider with more than one voice has these. */
+  voices?(): { name: string; heardAs: string[] }[]
+  voice?(): string
+  select?(name: string): void
 }
 
 export class TtsUnavailable extends Error {
@@ -119,5 +123,127 @@ export class SayTts implements TtsProvider {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  }
+}
+
+// ---------------------------------------------------------------- fish.audio
+// A hosted voice: the text leaves this machine for api.fish.audio. Voices are
+// named in the config and one is current; "voice X" by speech changes it.
+
+export interface FishVoice {
+  /** What it is called here and by voice: "jarvis". */
+  name: string
+  /** fish.audio's id for the voice model (its reference_id). */
+  id: string
+  /** What speech-to-text is known to hear instead of the name. */
+  heardAs: string[]
+}
+
+export interface FishOptions {
+  /** Null when no key was found; `keyHint` says where one was looked for. */
+  apiKey: string | null
+  keyHint: string
+  /** The speech model, sent as the `model` header: "s2.1-pro". */
+  model: string
+  voices: FishVoice[]
+  /** The name of the voice to start with. */
+  voice: string
+  maxChars: number
+  endpoint?: string
+  /** Speaks when fish.audio cannot, so a dead network does not mean silence. */
+  fallback?: TtsProvider
+  /** Called when the voice changes, so the choice outlives a restart. */
+  remember?: (name: string) => void
+  fetch?: typeof fetch
+  timeoutMs?: number
+  log?: (...a: unknown[]) => void
+}
+
+export class FishTts implements TtsProvider {
+  readonly name = 'fish'
+  private readonly o: FishOptions
+  private readonly log: (...a: unknown[]) => void
+  private current: FishVoice
+  /** Why the last request fell back, until one succeeds. */
+  private failed: string | null = null
+  private readonly cache = new Map<string, Speech>()
+
+  constructor(o: FishOptions) {
+    if (!o.voices.length) throw new Error('tts.fish.voices names no voice')
+    const start = o.voices.find(v => v.name === o.voice)
+    if (!start) throw new Error(`tts.voice is ${JSON.stringify(o.voice)}, which is not one of tts.fish.voices (${o.voices.map(v => v.name).join(', ')})`)
+    this.o = o
+    this.log = o.log ?? ((...a) => console.log('[tts]', ...a))
+    this.current = start
+  }
+
+  voices(): FishVoice[] {
+    return this.o.voices
+  }
+
+  voice(): string {
+    return this.current.name
+  }
+
+  /** Changes the current voice. Throws for a name the config does not have. */
+  select(name: string): void {
+    const v = this.o.voices.find(x => x.name === name)
+    if (!v) throw new Error(`no voice called ${name}`)
+    this.current = v
+    this.log(`voice: ${v.name}`)
+    this.o.remember?.(v.name)
+  }
+
+  status(): TtsStatus {
+    const label = `fish.audio (${this.current.name}, ${this.o.model})`
+    if (!this.o.apiKey) {
+      const why = `no fish.audio API key (${this.o.keyHint})`
+      return this.o.fallback ? { provider: `${this.o.fallback.status().provider}; ${why}`, ok: this.o.fallback.status().ok, error: this.o.fallback.status().error } : { provider: label, ok: false, error: why }
+    }
+    if (this.failed && this.o.fallback) return { provider: `${this.o.fallback.status().provider}; fish.audio failed: ${this.failed}`, ok: this.o.fallback.status().ok, error: this.o.fallback.status().error }
+    return { provider: label, ok: !this.failed, error: this.failed }
+  }
+
+  async speak(text: string): Promise<Speech> {
+    const t = speakable(text, this.o.maxChars)
+    if (!t) throw new TtsUnavailable('nothing to say')
+    const v = this.current
+    const key = createHash('sha256').update(`${this.o.model}\0${v.id}\0${t}`).digest('hex')
+    const hit = this.cache.get(key)
+    if (hit) return hit
+    try {
+      const speech = await this.request(t, v)
+      this.failed = null
+      this.cache.set(key, speech)
+      // Each phrase costs money to make; the short ones repeat.
+      if (this.cache.size > 80) this.cache.delete(this.cache.keys().next().value!)
+      return speech
+    } catch (err) {
+      this.failed = (err as Error).message
+      this.log(`fish.audio failed (${v.name}): ${this.failed}${this.o.fallback ? `; speaking with ${this.o.fallback.name} instead` : ''}`)
+      if (this.o.fallback) return this.o.fallback.speak(text)
+      throw err instanceof TtsUnavailable ? err : new Error(`fish.audio: ${this.failed}`)
+    }
+  }
+
+  private async request(text: string, v: FishVoice): Promise<Speech> {
+    if (!this.o.apiKey) throw new TtsUnavailable(`no fish.audio API key (${this.o.keyHint})`)
+    const t0 = Date.now()
+    const r = await (this.o.fetch ?? fetch)(`${this.o.endpoint ?? 'https://api.fish.audio'}/v1/tts`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.o.apiKey}`, model: this.o.model, 'content-type': 'application/json' },
+      // MP3, because the Quest browser plays it and fish.audio returns it fastest.
+      body: JSON.stringify({ text, reference_id: v.id, format: 'mp3', mp3_bitrate: 128, latency: 'balanced' }),
+      signal: AbortSignal.timeout(this.o.timeoutMs ?? 20_000),
+    })
+    if (!r.ok) {
+      const body = await r.text().catch((err: unknown) => `unreadable reply: ${String(err)}`)
+      const why = r.status === 401 ? 'the API key was refused' : r.status === 402 ? 'the account is out of credit' : body.slice(0, 200)
+      throw new Error(`HTTP ${r.status}: ${why}`)
+    }
+    const audio = Buffer.from(await r.arrayBuffer())
+    if (audio.length < 200) throw new Error(`HTTP ${r.status} with ${audio.length} bytes of audio`)
+    this.log(`fish.audio: ${v.name}, ${text.length} chars, ${audio.length} bytes in ${Date.now() - t0} ms`)
+    return { audio, mime: 'audio/mpeg' }
   }
 }
