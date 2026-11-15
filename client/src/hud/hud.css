@@ -83,6 +83,10 @@
 .r-you { border-left-color: var(--ask); }
 .r-you .turn-text { font-size: 1.1rem; color: var(--muted); }
 .r-other .turn-text { font-size: 1rem; color: var(--muted); }
+.r-character { border-left-style: dashed; border-left-color: var(--accent); background: var(--panel-2); border-radius: 0 var(--radius) var(--radius) 0; padding: calc(8rem/24) 0.75rem; }
+.r-character .turn-who { color: var(--accent); }
+.r-character .turn-text { font-style: italic; }
+.reader-via { color: var(--muted); font-size: 0.85rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .md-h { font-weight: 800; font-size: 1.15em; margin-top: 0.5em; color: #fff; }
 .md-li { padding-left: 1.3em; position: relative; }
 .md-li::before { content: "•"; position: absolute; left: 0.3em; color: var(--accent); }
@@ -106,6 +110,15 @@ button.link { background: none; border: none; color: var(--accent); text-decorat
 
 .pairing { max-width: 900px; margin: 8vh auto; display: grid; gap: 0.75rem; }
 .pairing form { display: grid; gap: calc(14rem/24); }
+/* The code is read across a room, through a headset: as big as the column allows. */
+.pair-lead { font-size: 1.4rem; margin: 0; }
+.pair-code {
+  font-family: ui-monospace, Menlo, monospace; font-size: clamp(3.5rem, 12vw, 7rem); font-weight: 800; letter-spacing: 0.08em; line-height: 1.1;
+  text-align: center; padding: 0.4rem 1rem; background: var(--panel); border: 0.25rem solid var(--accent); border-radius: var(--radius);
+}
+.pair-where { font-size: 1.2rem; margin: 0; overflow-wrap: anywhere; }
+.pair-expiry { color: var(--muted); font-variant-numeric: tabular-nums; margin: 0; }
+.pair-alt { margin: 0; }
 
 /* Voice dock: pinned to the bottom, where the controller ray rests. */
 .voice {
@@ -160,7 +173,7 @@ button.link { background: none; border: none; color: var(--accent); text-decorat
 .rb-result { font-size: 1.2rem; display: flex; flex-wrap: wrap; gap: calc(10rem/24); align-items: baseline; }
 .rb-state { font-weight: 800; letter-spacing: 0.05em; }
 .rb-sent { border-color: var(--ok); } .rb-sent .rb-state { color: var(--ok); }
-.rb-refused, .rb-limited { border-color: var(--bad); } .rb-refused .rb-state, .rb-limited .rb-state { color: var(--bad); }
+.rb-refused, .rb-limited, .rb-unknown { border-color: var(--bad); } .rb-refused .rb-state, .rb-limited .rb-state, .rb-unknown .rb-state { color: var(--bad); }
 .rb-expired, .rb-cancelled { border-color: var(--line); opacity: 0.8; } .rb-expired .rb-state, .rb-cancelled .rb-state { color: var(--muted); }
 .rb-sending { border-color: var(--warn); }
 
@@ -235,10 +248,11 @@ button.link { background: none; border: none; color: var(--accent); text-decorat
 .voice-character strong { color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; }
 .quickline { display: flex; flex-wrap: wrap; align-items: center; gap: calc(10rem/24) 0.75rem; padding: calc(10rem/24) 0.75rem; border-radius: 0.5rem; background: var(--panel); border: 0.125rem solid var(--warn); }
 .quickline.rb-sent { border-color: var(--ok); } .quickline.rb-sent .rb-state { color: var(--ok); }
-.quickline.rb-refused, .quickline.rb-limited { border-color: var(--bad); } .quickline.rb-refused .rb-state, .quickline.rb-limited .rb-state { color: var(--bad); }
+.quickline.rb-refused, .quickline.rb-limited, .quickline.rb-unknown { border-color: var(--bad); } .quickline.rb-refused .rb-state, .quickline.rb-limited .rb-state, .quickline.rb-unknown .rb-state { color: var(--bad); }
 .quickline.rb-cancelled { border-color: var(--line); opacity: 0.8; }
 .ql-to { font-size: 1.1rem; white-space: nowrap; }
-.ql-text { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Wraps rather than clips: a message is quick only when the whole of it fits (QUICK_MAX_CHARS), and all of it must be read. */
+.ql-text { flex: 1; min-width: 0; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ql-cancel { min-height: var(--hit); min-width: calc(160rem/24); padding: calc(8rem/24) calc(22rem/24); border-radius: 0.5rem; border: 2px solid var(--bad); background: #2e0c0c; font-weight: 700; cursor: pointer; }
 .rb-count.slim { min-width: 5rem; flex: 0 0 calc(160rem/24); grid-template-columns: auto 1fr; align-items: center; }
 .rb-count.slim .rb-count-n { font-size: 1.3rem; }
@@ -267,3 +281,28 @@ html[data-text="compact"] .r-other .turn-text { font-size: 0.9rem; }
   background: var(--panel-2); color: var(--muted); font-weight: 800; cursor: pointer;
 }
 .textsize-btns button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); }
+
+/* Character buttons: one per configured character, and Operator. Sizes in rem, so they follow the text size. */
+.char-row { display: flex; flex-wrap: wrap; gap: calc(10rem/24); align-items: center; }
+.char-btn {
+  --char-accent: var(--accent);
+  min-height: calc(64rem/24); min-width: calc(150rem/24); padding: calc(10rem/24) calc(22rem/24); border-radius: var(--radius);
+  border: calc(3rem/24) solid var(--line); background: var(--panel-2); color: var(--muted);
+  font-size: 1.1rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
+}
+.char-btn.on { border-color: var(--char-accent); color: var(--text); background: #0c2a3a; box-shadow: inset 0 0 0 calc(2rem/24) var(--char-accent); }
+.char-btn:disabled { cursor: progress; opacity: 0.7; }
+.char-btn.pending { opacity: 1; border-style: dashed; border-color: var(--char-accent); }
+.char-error { color: var(--bad); font-weight: 600; }
+
+/* Sub-agents under a session card: one compact row each, finished ones dimmed. */
+.subagents { list-style: none; margin: calc(4rem/24) 0 0; padding: 0; display: grid; gap: calc(4rem/24); font-size: 0.85rem; }
+.subagent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0 calc(10rem/24); padding: calc(4rem/24) calc(10rem/24); border-left: calc(4rem/24) solid var(--accent); background: var(--panel-2); border-radius: 0 calc(8rem/24) calc(8rem/24) 0; }
+.subagent.done, .subagent.unknown { opacity: 0.55; border-left-color: var(--line); }
+.subagent.failed { border-left-color: var(--bad); }
+.sa-type { font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.sa-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-state { font-weight: 800; color: var(--muted); }
+.subagent.running .sa-state { color: var(--ok); } .subagent.failed .sa-state { color: var(--bad); }
+.sa-now { grid-column: 1 / -1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagents-more { color: var(--muted); font-size: 0.85rem; }

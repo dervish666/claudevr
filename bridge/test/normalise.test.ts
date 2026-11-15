@@ -168,3 +168,87 @@ test("the bridge's own sessions, by working directory, stay out of the fleet", (
   assert.ok(hidden.includes('near-1'), 'a directory that only starts with the same letters is not inside it')
   assert.equal(hidden.length, shown.length - 1)
 })
+
+// ---------------------------------------------------------------- sub-agents
+
+/** A synthetic board: invented agents, every field a sub-agent can carry, and some that are wrong. */
+function agentBoard() {
+  const b = board()
+  const s = b.other[0] ?? b.tasks.find((t: any) => t.session)?.session
+  const agent = (id: string, status: unknown, extra: Record<string, unknown> = {}) => ({ id, type: 'general-purpose', description: `job ${id}`, status, statusFrom: 'status-dash', model: 'test-model', effort: 'low', startedAt: 1000, endedAt: null, activeMs: 10, usd: 0.01, shape: 'foreground', depth: 1, lastAt: 1000, brief: 'Do the thing.', now: null, recent: [], ...extra })
+  s.agents = [
+    agent('old-done', 'completed', { startedAt: 100, endedAt: 200 }),
+    agent('run-early', 'running', { startedAt: 500, now: { state: 'thinking', status: 'thinking 4s' } }),
+    agent('new-done', 'completed', { startedAt: 300, endedAt: 900, recent: [{ at: 850, kind: 'tool', tool: 'Bash', text: 'list the files' }, { at: 890, kind: 'say', text: 'All done.' }] }),
+    agent('run-late', 'running', { startedAt: 800, now: null, recent: [{ at: 810, kind: 'tool', tool: 'Read', text: 'notes.md' }] }),
+    agent('killed', 'killed', { endedAt: 700 }),
+    agent('odd', 'quiet', { endedAt: 650 }),
+    agent('weird-types', 7, { startedAt: 10, type: 12, description: 'x'.repeat(5000), brief: 'y'.repeat(5000), depth: 'deep', recent: 'not a list', now: 'not an object' }),
+    agent('run-early', 'running'),
+    { type: 'no id' },
+    'not an object',
+    ...Array.from({ length: 4 }, (_, i) => agent(`extra-${i}`, i === 0 ? 'running' : 'completed', { startedAt: 50 + i, endedAt: i === 0 ? null : 60 + i })),
+  ]
+  s.more = 3
+  // Read at 1 s, so every finished agent here ended moments ago and keeps its detail.
+  b.at = 1000
+  return { b, id: String(s.sessionId) }
+}
+
+test('sub-agents: trimmed, running first, then the most recently finished, capped with the rest counted', () => {
+  const { b, id } = agentBoard()
+  const s = normalise(b, t3()).fleet.sessions.find(x => x.id === id)!
+  const ids = s.agents!.map(a => a.id)
+  assert.deepEqual(ids.slice(0, 3), ['run-late', 'run-early', 'extra-0'], 'running first, newest start first')
+  assert.equal(ids[3], 'new-done', 'then the most recently ended')
+  assert.equal(s.agents!.length, 6, 'capped at 6')
+  assert.equal(new Set(ids).size, ids.length, 'a repeated id is kept once')
+  // 11 usable agents (a duplicate and two unreadable ones dropped): 5 left out, plus dashweb's own 3.
+  assert.equal(s.moreAgents, 5 + 3)
+  assert.equal(s.moreRunning, 0, 'every running agent made the cut')
+  const byId = new Map(normalise(b, t3()).fleet.sessions.find(x => x.id === id)!.agents!.map(a => [a.id, a]))
+  assert.equal(byId.get('run-early')!.now, 'thinking 4s', 'the current activity')
+  assert.equal(byId.get('run-late')!.now, 'Read: notes.md', 'no current activity: the newest recent entry')
+  assert.equal(byId.get('new-done')!.state, 'done')
+  assert.deepEqual(byId.get('new-done')!.recent, [{ at: 850, text: 'Bash: list the files' }, { at: 890, text: 'All done.' }])
+  assert.equal(byId.get('killed')!.state, 'failed')
+  assert.equal(byId.get('odd')!.state, 'unknown')
+})
+
+test('sub-agents: wrong types are dropped or replaced, long text is clipped', () => {
+  const { b, id } = agentBoard()
+  // Keep only the badly typed agent, so the cap does not hide it.
+  const s0 = b.other[0] ?? b.tasks.find((t: any) => t.session)?.session
+  s0.agents = s0.agents.filter((a: any) => a?.id === 'weird-types')
+  s0.more = 'lots'
+  const s = normalise(b, t3()).fleet.sessions.find(x => x.id === id)!
+  const a = s.agents![0]!
+  assert.equal(a.type, 'agent')
+  assert.equal(a.state, 'unknown')
+  assert.ok(a.description.length <= 100)
+  assert.ok(a.brief!.length <= 240)
+  assert.equal(a.depth, 1)
+  assert.deepEqual(a.recent, [])
+  assert.equal(a.now, null)
+  assert.equal(s.moreAgents, 0, 'a `more` that is not a number counts as none')
+})
+
+test('sub-agents: a finished agent long gone keeps its line but sheds its brief and recent list', () => {
+  const { b, id } = agentBoard()
+  b.at = 1000 + 10 * 60_000
+  const s = normalise(b, t3()).fleet.sessions.find(x => x.id === id)!
+  const done = s.agents!.find(a => a.id === 'new-done')!
+  assert.deepEqual([done.brief, done.recent, done.description], [null, [], 'job new-done'])
+  assert.equal(s.agents!.find(a => a.id === 'run-late')!.recent.length, 1, 'a running agent keeps its detail however old')
+})
+
+test('sub-agents: a session with none has an empty list, and the dispatcher carries its own', () => {
+  const b = board()
+  for (const v of [...b.other, ...b.tasks.map((t: any) => t.session)].filter(Boolean)) delete v.agents
+  const f = normalise(b, t3()).fleet
+  for (const s of f.sessions) assert.deepEqual([s.agents, s.moreAgents], [[], 0])
+  // The capture has no dispatcher: make one from a copy of a session.
+  b.dispatcher = { ...structuredClone(b.other[0]), sessionId: 'dispatcher-test', agents: [{ id: 'd1', type: 'Explore', description: 'look around', status: 'running' }] }
+  const d = normalise(b, t3()).fleet.sessions.find(s => s.kind === 'dispatcher')!
+  assert.equal(d.agents![0]!.id, 'd1')
+})

@@ -7,15 +7,20 @@
 // 40 by 22 degrees. Body text is 30 px, about 1.3 degrees, about 55
 // characters a line.
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree, type RootState } from '@react-three/fiber'
 import { Container, Text } from '@react-three/uikit'
 import { XRLayer, useXRSessionFeatureEnabled } from '@react-three/xr'
 import { signal } from '@preact/signals-core'
 import { OrthographicCamera, SRGBColorSpace, type WebGLRenderTarget } from 'three'
-import type { Session, SessionTranscript, Turn } from '../../../shared/protocol.ts'
+import type { AgentInfo, CharacterInfo, Conversation, ConversationEntry, Session, Turn } from '../../../shared/protocol.ts'
+import { AGENT_WORDS, runTime } from '../../../shared/agents.ts'
+import { computed } from '@preact/signals-core'
+import { second } from './clock.ts'
+import { useStreamItems } from '../hud/conversation.ts'
+import { useTranscriptPoll } from '../hud/transcript.ts'
 import { blocks, fit, type Block } from './text.ts'
-import { C, DEG, FONTS, STATE_WORDS, stateColour, rgba } from './theme.ts'
+import { C, DEG, FONTS, STATE_WORDS, shade, stateColour, rgba } from './theme.ts'
 import { countRender, log } from './telemetry.ts'
 
 export const STREAM_W = 907
@@ -29,11 +34,8 @@ export const MESH_WIDTH_M = 2 * RADIUS * Math.tan(STREAM_ANGLE / 2)
 export const LAYER_W = 2048
 export const LAYER_H = Math.round((LAYER_W * STREAM_H) / STREAM_W / 2) * 2
 
-const REFRESH_MS = 6000
-const TURNS = 12
-
-/** Who the Core is talking to. A demo tile has no conversation behind it. */
-export type Target = { kind: 'dispatcher'; session: Session | null } | { kind: 'session'; session: Session } | { kind: 'demo'; id: string; callsign: string }
+/** Who the Core is talking to. */
+export type Target = { kind: 'dispatcher'; session: Session | null } | { kind: 'session'; session: Session }
 
 export interface StreamData {
   key: string
@@ -44,52 +46,16 @@ export interface StreamData {
   at: number | null
 }
 
-/** The target's last turns from GET /api/transcript, re-read every few seconds and whenever it says something. */
+/**
+ * The target's last turns from GET /api/transcript, re-read every few seconds and whenever it says something.
+ * The polling is the 2D reader's too (hud/transcript.ts); this only words its problem for the panel.
+ */
 export function useTranscript(token: string, target: Target): StreamData {
-  const session = target.kind === 'demo' ? null : target.session
-  const id = session?.id ?? null
-  const key = target.kind === 'demo' ? `demo:${target.id}` : `s:${id ?? 'none'}`
+  const session = target.session
   const changed = session ? `${session.lastLine ?? ''}|${session.state}` : ''
-  const [data, setData] = useState<StreamData>({ key, turns: null, problem: null, loaded: false, at: null })
-  useEffect(() => {
-    if (!id) {
-      setData({ key, turns: null, problem: null, loaded: true, at: null })
-      return
-    }
-    let live = true
-    setData(d => (d.key === key ? d : { key, turns: null, problem: null, loaded: false, at: null }))
-    const read = async () => {
-      try {
-        const r = await fetch(`/api/transcript?session=${encodeURIComponent(id)}&limit=${TURNS}`, { headers: { authorization: `Bearer ${token}` }, cache: 'no-store' })
-        const body = (await r.json()) as Partial<SessionTranscript> & { error?: string }
-        if (!live) return
-        if (r.ok && Array.isArray(body.turns)) {
-          const next = body.turns
-          // A re-read that says the same thing keeps the same array (so the panel does not lay itself out again
-          // every few seconds) and the same object (so nothing that draws it renders again at all).
-          setData(d => (d.key === key && d.loaded && !d.problem && d.turns && sameTurns(d.turns, next) ? d : { key, turns: d.key === key && d.turns && sameTurns(d.turns, next) ? d.turns : next, problem: null, loaded: true, at: Date.now() }))
-        }
-        else {
-          const problem = `${r.status === 404 || r.status === 501 ? 'Short clips only' : 'FULL REPLIES UNAVAILABLE'}: ${body.error ?? `HTTP ${r.status}`}`
-          setData(d => (d.key === key && d.loaded && d.problem === problem ? d : { ...d, key, loaded: true, problem }))
-        }
-      } catch (err) {
-        console.error('instrument: transcript read failed:', err)
-        if (live) setData(d => ({ ...d, key, loaded: true, problem: `FULL REPLIES UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` }))
-      }
-    }
-    void read()
-    const t = setInterval(() => void read(), REFRESH_MS)
-    return () => {
-      live = false
-      clearInterval(t)
-    }
-  }, [token, id, key, changed])
-  return data
-}
-
-function sameTurns(a: Turn[], b: Turn[]): boolean {
-  return a.length === b.length && a.every((t, i) => t.role === b[i]!.role && t.text === b[i]!.text && t.clipped === b[i]!.clipped)
+  const t = useTranscriptPoll(token, session?.id ?? null, changed)
+  // Same object in, same object out: unchanged turns must not rebuild the uikit text.
+  return useMemo(() => ({ key: t.key, turns: t.turns, problem: t.problem ? `${t.problem.kind === 'none' ? 'Short clips only' : 'FULL REPLIES UNAVAILABLE'}: ${t.problem.why}` : null, loaded: t.loaded, at: t.at }), [t])
 }
 
 /** Scroll requests from the thumbsticks, in design px; the Stream applies them on its next frame. */
@@ -104,23 +70,105 @@ interface ContentProps {
   sizeX: number
   sizeY: number
   pixelSize: number
+  /** The selected character, or null in operator mode: with one, the dispatcher's stream is the character's. */
+  character: CharacterInfo | null
+  conversation: Conversation | null
+  /** A picked sub-agent, shown read-only in place of the turns; null shows the target's turns. */
+  agent?: AgentInfo | null
+  /** Who the agent belongs to, as the header names it: the talk target stays that session. */
+  agentOwner?: string | null
 }
 
-/** The uikit tree both views draw. */
-export const StreamContent = memo(function StreamContent({ target, data, plate, sizeX, sizeY, pixelSize }: ContentProps) {
+/** The uikit tree both views draw: the target's turns, or a picked sub-agent's detail. */
+export const StreamContent = memo(function StreamContent(p: ContentProps) {
+  // A different component, so the switch builds a new uikit root rather than swapping children inside a live one.
+  if (p.agent) return <AgentDetail key={`agent:${p.agent.id}:${p.agent.recent.length}:${p.agent.brief ? 1 : 0}`} agent={p.agent} owner={p.agentOwner ?? 'ITS SESSION'} plate={p.plate} sizeX={p.sizeX} sizeY={p.sizeY} pixelSize={p.pixelSize} />
+  return <Turns key="turns" {...p} />
+})
+
+const AGENT_TINT = { running: C.cyan, done: C.green, failed: C.red, unknown: C.muted } as const
+
+/**
+ * A sub-agent, read-only: what it is, its state and how long it has run,
+ * the start of its brief and what it did lately. Nothing can be sent to it,
+ * and the header says where talking goes instead.
+ */
+function AgentDetail({ agent: a, owner, plate, sizeX, sizeY, pixelSize }: { agent: AgentInfo; owner: string; plate: number; sizeX: number; sizeY: number; pixelSize: number }) {
+  countRender('stream')
+  useEffect(() => log('agent-detail', { agent: a.id, state: a.state, recent: a.recent.length }), [a.id, a.state, a.recent.length])
+  // The running time ticks off the shared second; nothing else here moves without a fleet read.
+  const ran = useMemo(() => computed(() => {
+    const t = runTime(a, a.endedAt ?? second.value)
+    return t ? `${a.endedAt ? 'RAN' : 'RUNNING FOR'} ${t.toUpperCase()}` : 'START TIME UNKNOWN'
+  }), [a])
+  return (
+    <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={6} overflow="hidden">
+      <Container flexDirection="row" alignItems="center" gap={16} paddingX={28} height={54} flexShrink={0} borderBottomWidth={2} borderColor={C.cyanDim}>
+        <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={C.cyan} flexShrink={0}>
+          {fit(`SUB-AGENT OF ${owner}`, 'rajdhani-700')}
+        </Text>
+        <Container flexGrow={1} />
+        <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={20} color={C.amber} flexShrink={0}>
+          {fit(`READ ONLY · TALK GOES TO ${owner}`, 'rajdhani-600')}
+        </Text>
+      </Container>
+      <Container flexDirection="column" paddingX={28} paddingY={14} gap={10} flexGrow={1} overflow="hidden">
+        <Container flexDirection="row" alignItems="baseline" gap={16} flexShrink={0}>
+          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={30} color={C.white} flexShrink={0}>
+            {fit(a.type.toUpperCase(), 'rajdhani-700')}
+          </Text>
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={22} color={AGENT_TINT[a.state]} flexShrink={0}>
+            {AGENT_WORDS[a.state]}
+          </Text>
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={20} color={C.muted} flexShrink={1}>
+            {fit(a.model ? a.model.toUpperCase() : 'MODEL NOT REPORTED', 'rajdhani-600')}
+          </Text>
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={20} color={C.muted} flexShrink={0}>
+            {ran}
+          </Text>
+        </Container>
+        <Text fontFamily="inter" fontWeight="semi-bold" fontSize={24} lineHeight={1.3} color={C.body} flexShrink={0}>
+          {fit(a.description)}
+        </Text>
+        {a.brief && (
+          <Container flexDirection="column" gap={4} paddingLeft={14} borderLeftWidth={4} borderColor={C.cyanDim} flexShrink={0}>
+            <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted}>
+              BRIEF, THE START OF IT
+            </Text>
+            <Text fontFamily="inter" fontSize={20} lineHeight={1.35} color={C.body}>
+              {fit(a.brief)}
+            </Text>
+          </Container>
+        )}
+        <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted} flexShrink={0}>
+          {a.recent.length ? 'LATELY, OLDEST FIRST' : 'NOTHING REPORTED YET'}
+        </Text>
+        {a.recent.map((r, i) => (
+          <Text key={i} fontFamily="inter" fontSize={20} lineHeight={1.3} color={i === a.recent.length - 1 ? C.white : C.muted} flexShrink={0}>
+            {fit(r.text)}
+          </Text>
+        ))}
+      </Container>
+    </Container>
+  )
+}
+
+function Turns({ target, data, plate, sizeX, sizeY, pixelSize, character, conversation }: ContentProps) {
   countRender('stream')
   const scrollRef = useRef<any>(null)
   const stick = useRef(true)
   const opacity = useMemo(() => signal(0), [])
   const shownKey = useRef<string | null>(null)
 
-  const who = target.kind === 'dispatcher' ? 'DISPATCHER' : target.kind === 'demo' ? target.callsign : target.session.callsign.toUpperCase()
-  const session = target.kind === 'demo' ? null : target.session
-  const turns: Turn[] =
-    target.kind === 'demo'
-      ? [{ role: 'other', text: 'A demo tile, here so the layout can be judged with fewer than three sessions in the fleet. It has no conversation behind it, and nothing said while it is selected is sent anywhere.\n\nPick a real tile, press the iris, or say "dispatcher" to go back.', clipped: false }]
-      : (data.turns ?? session?.messages.map(m => ({ role: 'session' as const, text: m.text, clipped: false })) ?? [])
-  const parsed = useMemo(() => turns.map(t => ({ t, b: blocks(t.text) })), [turns])
+  // With a character on, the dispatcher's stream is the character's: its name on top, the dispatcher doing the work.
+  const asCharacter = target.kind === 'dispatcher' && character !== null
+  const who = asCharacter ? character.name.toUpperCase() : target.kind === 'dispatcher' ? 'DISPATCHER' : target.session.callsign.toUpperCase()
+  const sessionWho = target.kind === 'dispatcher' ? 'DISPATCHER' : who
+  const accent = (asCharacter && character.accent) || C.cyan
+  const session = target.session
+  const turns: Turn[] = data.turns ?? session?.messages.map(m => ({ role: 'session' as const, text: m.text, clipped: false })) ?? []
+  const items = useStreamItems(turns, conversation, character, asCharacter)
+  const parsed = useMemo(() => items.map(it => ({ it, b: blocks(it.kind === 'turn' ? it.turn.text : it.entry.text) })), [items])
   const note = target.kind === 'dispatcher' && !target.session ? 'No dispatcher session in the fleet.' : data.problem ? data.problem : !data.loaded ? 'Reading the full replies…' : null
 
   // A new target fades in; new content on the same target sticks to the bottom.
@@ -153,8 +201,12 @@ export const StreamContent = memo(function StreamContent({ target, data, plate, 
   return (
     <Container sizeX={sizeX} sizeY={sizeY} pixelSize={pixelSize} fontFamilies={FONTS} flexDirection="column" backgroundColor={plateColour(plate)} borderRadius={6} overflow="hidden" opacity={opacity}>
       <Container flexDirection="row" alignItems="center" gap={16} paddingX={28} height={54} flexShrink={0} borderBottomWidth={2} borderColor={C.cyanDim}>
-        <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={target.kind === 'demo' ? C.amber : C.cyan}>
+        <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={accent}>
           {fit(who, 'rajdhani-700')}
+        </Text>
+        {/* Always in the tree, hidden in operator mode: adding or removing a child inside a live uikit root leaves ghost text. */}
+        <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted} flexShrink={0} display={asCharacter ? 'flex' : 'none'}>
+          VIA DISPATCHER
         </Text>
         {session && (
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={22} color={stateColour(session.state)}>
@@ -163,7 +215,7 @@ export const StreamContent = memo(function StreamContent({ target, data, plate, 
         )}
         <Container flexGrow={1} />
         <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={20} color={C.muted}>
-          {target.kind === 'demo' ? 'DEMO · NOT SENDABLE' : `${turns.length} TURN${turns.length === 1 ? '' : 'S'} · NEWEST AT THE BOTTOM`}
+          {`${turns.length} TURN${turns.length === 1 ? '' : 'S'} · NEWEST AT THE BOTTOM`}
         </Text>
       </Container>
       {note && (
@@ -177,12 +229,18 @@ export const StreamContent = memo(function StreamContent({ target, data, plate, 
             Nothing said yet.
           </Text>
         ) : (
-          parsed.map(({ t, b }, i) => <TurnView key={`${data.key}-${i}-${t.role}`} turn={t} blocks={b} who={t.role === 'you' ? 'YOU' : t.role === 'session' ? fit(who, 'rajdhani-600') : 'NOTE'} />)
+          parsed.map(({ it, b }, i) =>
+            it.kind === 'character' ? (
+              <CharacterLineView key={`${data.key}-${i}-character`} entry={it.entry} blocks={b} who={fit(who, 'rajdhani-600')} accent={accent} />
+            ) : (
+              <TurnView key={`${data.key}-${i}-${it.turn.role}`} turn={it.turn} blocks={b} who={it.turn.role === 'you' ? 'YOU' : it.turn.role === 'session' ? fit(sessionWho, 'rajdhani-600') : 'NOTE'} />
+            ),
+          )
         )}
       </Container>
     </Container>
   )
-})
+}
 
 function TurnView({ turn, blocks: bs, who }: { turn: Turn; blocks: Block[]; who: string }) {
   const you = turn.role === 'you'
@@ -201,6 +259,20 @@ function TurnView({ turn, blocks: bs, who }: { turn: Turn; blocks: Block[]; who:
           Cut here. The rest is on the Mac.
         </Text>
       )}
+    </Container>
+  )
+}
+
+/** A line the character spoke: its name in its accent, on a tinted plate, so it never reads as a dispatcher turn. */
+function CharacterLineView({ entry, blocks: bs, who, accent }: { entry: ConversationEntry; blocks: Block[]; who: string; accent: string }) {
+  return (
+    <Container flexDirection="column" flexShrink={0} gap={6} paddingLeft={16} paddingY={8} borderLeftWidth={4} borderColor={accent} backgroundColor={shade(accent, 0.86)} borderRadius={4}>
+      <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={accent} flexShrink={0}>
+        {entry.source === 'fallback' ? `${who} · PLAIN` : who}
+      </Text>
+      {bs.map((b, i) => (
+        <BlockView key={i} b={b} size={28} colour={C.white} />
+      ))}
     </Container>
   )
 }

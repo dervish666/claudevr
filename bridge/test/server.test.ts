@@ -4,6 +4,7 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:https'
+import { connect as tlsConnect } from 'node:tls'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import WebSocket from 'ws'
@@ -138,6 +139,35 @@ test('API: a request from another origin is refused even with the token', async 
   assert.equal(r.status, 403)
 })
 
+test('API: http:// on the same host is another origin, since the bridge only serves https://', async () => {
+  const host = `127.0.0.1:${port}`
+  assert.equal((await call('GET', '/api/health', { token: TOKEN, headers: { origin: `http://${host}` } })).status, 403)
+  assert.equal((await call('GET', '/api/health', { token: TOKEN, headers: { origin: `https://${host}` } })).status, 200)
+  const ws = await connect(['claudevr', `token.${TOKEN}`], `http://${host}`)
+  assert.deepEqual(ws, { error: '403' }, 'the WebSocket too')
+})
+
+/** What the bridge answers to bytes written straight onto a TLS socket, so the request line can be anything. */
+function rawExchange(text: string): Promise<string> {
+  return new Promise((ok, fail) => {
+    let got = ''
+    const s = tlsConnect({ host: '127.0.0.1', port, rejectUnauthorized: false }, () => s.write(text))
+    s.on('data', d => (got += d))
+    s.on('close', () => ok(got))
+    // The bridge closes as soon as it has answered; a reset after the answer is fine.
+    s.on('error', err => (got ? ok(got) : fail(err)))
+  })
+}
+
+test('a request target that is not a URL is answered 400, on HTTP and on the WebSocket path, and the bridge stays up', async () => {
+  const http = await rawExchange('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n')
+  assert.match(http, /^HTTP\/1\.1 400/)
+  const upgrade = await rawExchange('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+  assert.match(upgrade, /^HTTP\/1\.1 400/)
+  assert.match(String((await rawExchange('GET /%E0%A4%A HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'))), /^HTTP\/1\.1 400/, 'a path that does not decode is 400, not 500')
+  assert.equal((await call('GET', '/api/health', { token: TOKEN })).status, 200, 'still serving')
+})
+
 test('pair: off by default, so the token is never handed out', async () => {
   const r = await call('POST', '/api/pair')
   assert.equal(r.status, 403)
@@ -256,9 +286,9 @@ test('the page policy allows WebAssembly compilation and nothing looser', async 
   assert.doesNotMatch(csp, /'unsafe-eval'|'unsafe-inline'[^;]*script|https?:/)
 })
 
-function connect(protocols: string[]): Promise<{ ws: WebSocket; first: any } | { error: string }> {
+function connect(protocols: string[], origin?: string): Promise<{ ws: WebSocket; first: any } | { error: string }> {
   return new Promise(ok => {
-    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws`, protocols, { rejectUnauthorized: false })
+    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws`, protocols, { rejectUnauthorized: false, ...(origin ? { origin } : {}) })
     ws.once('message', m => ok({ ws, first: JSON.parse(String(m)) }))
     ws.once('unexpected-response', (_req, res) => ok({ error: String(res.statusCode) }))
     ws.once('error', err => ok({ error: err.message }))

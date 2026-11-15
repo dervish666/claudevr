@@ -18,6 +18,7 @@
     "test": "node --test 'bridge/test/**/*.test.ts'",
     "typecheck": "tsc -p bridge && tsc -p client",
     "stt:setup": "node scripts/setup-stt.mjs",
+    "t3-link": "node bridge/src/t3-link.ts",
     "fonts": "node scripts/make-fonts.mjs"
   },
   "devDependencies": {

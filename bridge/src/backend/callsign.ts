@@ -107,8 +107,8 @@ export function titleWord(title: string, not: string): string | null {
   const w = withoutCommandWords(words(title.replace(/^\s*[A-Za-z]{1,3}-?\d+\b[\s:.-]*/, '')))
   const pick = w.find(x => x.length > 1 && !VAGUE.has(x.toLowerCase()) && !COMMAND_WORDS.has(x.toLowerCase()) && x.toLowerCase() !== not.toLowerCase())
   if (!pick) return null
-  // Two or three letters with no vowel are initials, said letter by letter: "gt" -> "GT".
-  return pick.length <= 3 && !/[aeiouy]/i.test(pick) ? pick.toUpperCase() : speakable(pick)
+  // Initials, said letter by letter: any two letters ("ha" -> "HA"), or three with no vowel ("gtk" -> "GTK").
+  return pick.length === 2 || (pick.length === 3 && !/[aeiouy]/i.test(pick)) ? pick.toUpperCase() : speakable(pick)
 }
 
 /** Session id -> callsign, unique across `sessions`. */
@@ -150,8 +150,9 @@ export function assignCallsigns(sessions: CallsignInput[], overrides: readonly C
     group.forEach((s, i) => {
       const base = name.get(s.id)!
       let c = i === 0 ? base : `${base} ${NUMBERS[i - 1] ?? String(i + 1)}`
-      // A derived name that would need a number, or that an override already holds, tries its title first.
-      if (!fixed.has(s.id) && (i > 0 || taken.has(c.toLowerCase()))) {
+      // A name that would need a number, or that an override already holds, tries its title first.
+      // That includes a second session under a project's override: the oldest keeps the name.
+      if (i > 0 || (!fixed.has(s.id) && taken.has(c.toLowerCase()))) {
         const t = titleWord(s.title, base)
         if (t && !taken.has(t.toLowerCase()) && !claimed.has(t.toLowerCase())) c = t
       }
@@ -189,7 +190,8 @@ export function relabelFleet(fleet: Fleet, overrides: readonly CallsignOverride[
   const heardAs = new Map<string, string[]>()
   const sessions = fleet.sessions.map(s => {
     const o = overrideFor(s, overrides)
-    if (o?.heardAs.length) heardAs.set(s.id, o.heardAs)
+    // Only the session that kept the override's name answers to its other spellings.
+    if (o?.heardAs.length && names.get(s.id)?.toLowerCase() === o.callsign.trim().toLowerCase()) heardAs.set(s.id, o.heardAs)
     return { ...s, callsign: names.get(s.id) ?? s.callsign }
   })
   const byId = new Map(sessions.map(s => [s.id, s.callsign]))

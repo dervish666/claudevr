@@ -5,16 +5,11 @@
 // session has to be requested inside the press, with no download in between.
 
 import { useEffect, useState } from 'react'
-import { DEMO_PREFIX } from '../instrument/layout.ts'
 
 export type InstrumentModule = typeof import('../instrument/main.tsx')
 
 /** Set while an immersive session runs, so a reload that cuts one is noticed on the next load. */
 export const IN_INSTRUMENT_KEY = 'claudevr.inInstrument'
-
-/** Demo tiles fill the wings when the fleet is small. They have no session behind them and can never be sent to. */
-export { DEMO_PREFIX }
-export const isDemoTile = (id: string | null) => !!id && id.startsWith(DEMO_PREFIX)
 
 let loading: Promise<InstrumentModule> | null = null
 export function loadInstrument(): Promise<InstrumentModule> {

@@ -68,6 +68,17 @@ test('tell: a session with no send route is named as such, not guessed around', 
   assert.match(i.say, /Lantern cannot be sent to/)
 })
 
+test('tell: a name that cannot be sent to is said to be one, never swapped for a sendable look-alike', () => {
+  // "Tali" sounds like "Tally"; Tally itself has no send route.
+  const pair: Fleet = { ...fleet, sessions: [session('a-tally', 'Tally', { canSend: false }), session('a-tali', 'Tali')] }
+  assert.match(expectKind(run('tell Tally to run the tests', 'none', pair), 'unknown').say, /Tally cannot be sent to/)
+  // The same when the name is the answer to "who is it for?".
+  assert.match(expectKind(run('Tally', 'target', pair), 'unknown').say, /Tally cannot be sent to/)
+  // Named by its own name, the sendable one still gets the card.
+  assert.equal(expectKind(run('tell Tali to run the tests', 'none', pair), 'tell').sessionId, 'a-tali')
+  assert.equal(expectKind(run('Tali', 'target', pair), 'target').sessionId, 'a-tali')
+})
+
 test('tell: a name with no message asks for the message', () => {
   assert.match(expectKind(run('tell tally'), 'unknown').say, /Tell Tally what/)
 })
@@ -267,4 +278,14 @@ test("the character's name first: a command still runs, anything else is a quest
   // Without the name, and in operator mode, nothing changes.
   assert.equal(expectKind(say('What should I look at first?'), 'tell').viaFocus, true)
   assert.equal(expectKind(say('Bosun, what should I look at first?', { character: null }), 'tell').viaFocus, true)
+})
+
+test('status: names the sessions with sub-agents running, counting those the cap left out', () => {
+  const i = interpret({ transcript: 'status', fleet: demo, context: 'none', now: 0 })
+  assert.equal(i.kind, 'status')
+  const line = (i as Extract<Interpretation, { kind: 'status' }>).lines.find(l => l.startsWith('Sub-agents running'))
+  // Harbour has two running; Garden VR shows four and one more the cap left out; the finished ones do not count.
+  assert.match(line ?? '', /^Sub-agents running: .*Harbour 2.*Garden VR 5/)
+  const none = interpret({ transcript: 'status', fleet: { ...demo, sessions: demo.sessions.map(s => ({ ...s, agents: [], moreRunning: 0 })) }, context: 'none', now: 0 })
+  assert.ok(!(none as Extract<Interpretation, { kind: 'status' }>).lines.some(l => l.startsWith('Sub-agents')))
 })

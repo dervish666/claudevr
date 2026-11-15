@@ -42,6 +42,44 @@ export interface Session {
   canSend: boolean
   /** How full its context window is; null when the backend cannot tell. */
   context: ContextUse | null
+  /**
+   * Sub-agents it started, running first, then the most recently finished,
+   * capped by the adapter. Absent when the backend does not report them.
+   */
+  agents?: AgentInfo[]
+  /** Sub-agents left out by the cap, and how many of those were running. */
+  moreAgents?: number
+  moreRunning?: number
+}
+
+/** A sub-agent's state, folded from the backend's own words into a small fixed set. */
+export type AgentState = 'running' | 'done' | 'failed' | 'unknown'
+
+/** One line of what a sub-agent did lately: a tool call or something it said. */
+export interface AgentActivity {
+  at: number | null
+  text: string
+}
+
+/** A sub-agent of a session, trimmed for the HUD. Read-only: nothing can be sent to one. */
+export interface AgentInfo {
+  id: string
+  /** The agent's kind ("general-purpose", "Explore"). */
+  type: string
+  /** What it was asked to do, one line. */
+  description: string
+  state: AgentState
+  model: string | null
+  startedAt: number | null
+  endedAt: number | null
+  /** What it is doing right now, or the newest thing it did; null when unknown. */
+  now: string | null
+  /** 1 for an agent the session started itself, 2 for one an agent started. */
+  depth: number
+  /** The start of what it was told, clipped. */
+  brief: string | null
+  /** Its last few actions, oldest first, clipped. */
+  recent: AgentActivity[]
 }
 
 /** One turn of a session's conversation, in full (up to a cap), for the reader. */
@@ -163,6 +201,24 @@ export interface BackendStatus {
   lastOkAt: number | null
 }
 
+/**
+ * POST /api/send's body. `requestId` makes a retry safe: 8 to 64 characters
+ * of A-Z, a-z, 0-9, "-" and "_", unique per message (the card's id). The
+ * bridge remembers each one for 10 minutes; a repeat with the same session
+ * and text gets the first answer again, with `repeat: true`, and nothing is
+ * sent twice. The same id with a different session or text is refused (409).
+ * Only a send that reached the backend, or may have, is remembered. One
+ * refused before it went out (rate limit, unknown session) can be retried.
+ * When the bridge cannot know whether the message arrived, the reply is a
+ * 504 whose body has `outcome: "unknown"` beside `error`; 501 and 502 always
+ * mean nothing was sent.
+ */
+export interface SendRequest {
+  sessionId: string
+  text: string
+  requestId?: string
+}
+
 // ---------------------------------------------------------------- voice
 
 /** Why a clip produced no transcript. Each one is shown as itself, never as an empty transcript. */
@@ -259,12 +315,44 @@ export interface SpokenLine {
   ms: number
 }
 
+/**
+ * One entry in the character's conversation: what he said to the dispatcher
+ * (or to the character), what the dispatcher answered, and what the
+ * character said. Kept by the bridge in memory only.
+ */
+export interface ConversationEntry {
+  id: string
+  at: number
+  who: 'user' | 'dispatcher' | 'character'
+  text: string
+  /** For `user`: whether he sent it to the dispatcher or asked the character by name. */
+  to?: 'dispatcher' | 'character'
+  /** For `character`: the front man wrote it, or it is the plain fallback. */
+  source?: SpokenLine['source']
+  /** For `character`: the key (turnKey) of the dispatcher turn it follows, when the bridge knows it. */
+  after?: string | null
+}
+
+/** The character's conversation, served by GET /api/conversation and pushed on the WebSocket when it changes. */
+export interface Conversation {
+  /** The character it belongs to; null in operator mode, with no entries. */
+  character: string | null
+  /** Oldest first. */
+  entries: ConversationEntry[]
+}
+
 export interface CharacterInfo {
   name: string
   /** `quick`: a 2 s countdown on a slim line. `card`: the full card and 5 s, as in operator mode. */
   confirm: 'card' | 'quick'
   /** #rrggbb the HUD picks up while this character is selected, or null. */
   accent: string | null
+}
+
+/** POST /api/character answers this: the same shape the voice routes give for "be X". */
+export interface CharacterReply {
+  interpretation: Extract<Interpretation, { kind: 'character' }>
+  line?: PendingLine | null
 }
 
 export interface FrontManStatus {
@@ -319,9 +407,32 @@ export type ServerMessage =
   | { type: 'voice'; voice: VoiceStatus; status: BackendStatus }
   /** Character mode speaking up unprompted: a session needs you, failed, or finished. Speak it, never act on it. */
   | { type: 'line'; line: SpokenLine; status: BackendStatus }
+  /** The character's conversation changed (or a HUD just connected). Shown, never acted on. */
+  | { type: 'conversation'; conversation: Conversation; status: BackendStatus }
 
 /**
  * HUD to bridge, over the WebSocket. The bridge speaks up only to a HUD that
  * is not muted, and holds its tongue while the person holds to talk.
  */
 export type ClientMessage = { type: 'presence'; muted: boolean; holding: boolean }
+
+/**
+ * POST /api/pair/request: a code for a browser with no token to show, and
+ * what it needs to poll for its token. The secret goes in the
+ * x-pair-secret header of each poll and nowhere else.
+ */
+export interface PairTicket {
+  id: string
+  secret: string
+  /** "ACD-347": shown large on the device, typed on this machine's approval page. */
+  code: string
+  /** What the approval page will call this device: "Quest browser". */
+  label: string
+  /** Time left, not a clock time, so a headset with a wrong clock still counts down right. */
+  expiresInMs: number
+  /** The approval page, on this machine: https://localhost:<port>/pair. */
+  approveUrl: string
+}
+
+/** GET /api/pair/status?id=<id>: still waiting, or the device's own token (given once), or gone (expired, unknown, or already collected). */
+export type PairStatus = { state: 'pending'; expiresInMs: number } | { state: 'approved'; token: string; label: string } | { state: 'gone'; error: string }

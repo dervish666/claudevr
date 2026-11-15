@@ -235,6 +235,10 @@ export function sameVoice(a: Voice, b: Voice): boolean {
     a.character?.name === b.character?.name &&
     a.character?.accent === b.character?.accent &&
     a.character?.confirm === b.character?.confirm &&
+    a.characters.map(c => `${c.name}:${c.accent}`).join('|') === b.characters.map(c => `${c.name}:${c.accent}`).join('|') &&
+    a.characterPending?.name === b.characterPending?.name &&
+    !a.characterPending === !b.characterPending &&
+    a.characterError === b.characterError &&
     a.lineWaiting === b.lineWaiting &&
     a.announced === b.announced &&
     a.frontManProblem === b.frontManProblem &&
@@ -293,7 +297,7 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
     if (k === lastCard.current) return
     lastCard.current = k
     if (c?.state === 'sent') flash.current = { colour: GREEN, until: performance.now() + 900 }
-    if (c?.state === 'refused' || c?.state === 'limited') flash.current = { colour: RED, until: performance.now() + 1500 }
+    if (c?.state === 'refused' || c?.state === 'limited' || c?.state === 'unknown') flash.current = { colour: RED, until: performance.now() + 1500 }
     if (c?.state === 'cancelled') flash.current = { colour: IDLE, until: performance.now() + 400 }
   }, [voice.card])
   useFrame(() => {
@@ -460,7 +464,8 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 
 function Button({ label, colour, onClick, width = 210 }: { label: string; colour: string; onClick: () => void; width?: number }) {
   return (
-    <Container width={width} height={64} borderRadius={8} borderWidth={3} borderColor={colour} backgroundColor={rgba(8, 12, 15, 0.95)} hover={{ backgroundColor: rgba(30, 45, 55, 0.98) }} justifyContent="center" alignItems="center" onClick={e => (e.stopPropagation(), onClick())}>
+    // flexShrink 0: a long state word or detail beside it squeezes the text, never the button.
+    <Container width={width} height={64} flexShrink={0} borderRadius={8} borderWidth={3} borderColor={colour} backgroundColor={rgba(8, 12, 15, 0.95)} hover={{ backgroundColor: rgba(30, 45, 55, 0.98) }} justifyContent="center" alignItems="center" onClick={e => (e.stopPropagation(), onClick())}>
       <Text fontFamily="rajdhani" fontWeight="bold" fontSize={26} color={colour}>
         {label}
       </Text>
@@ -468,7 +473,14 @@ function Button({ label, colour, onClick, width = 210 }: { label: string; colour
   )
 }
 
-/** The read-back card: the target and the exact text, Send now and Cancel, and what happened after. */
+/** Lines of the full card's text shown before it scrolls inside the card: 26 px at 1.35 line height. */
+const CARD_TEXT_MAX_H = Math.round(8 * 26 * 1.35) + 24
+
+/**
+ * The read-back card: the target and the whole text, Send now and Cancel,
+ * and what happened after. Each layout and each state is its own uikit root
+ * (the keys below): swapping children inside a live root leaves ghost text.
+ */
 export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { voice: Voice; voiceRef: MutableRefObject<Voice>; fleetIds: Set<string> }) {
   const card = voice.card
   const which = voice.which
@@ -491,7 +503,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   if (!card && which) {
     return (
       <group position={[0, CORE_Y - 0.1, z]}>
-        <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={C.purple} backgroundColor={rgba(10, 8, 16, 0.96)}>
+        <Container key={`which:${which.expiresAt}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={C.purple} backgroundColor={rgba(10, 8, 16, 0.96)}>
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={24} color={C.purple}>
             {fit(which.say)}
           </Text>
@@ -512,17 +524,20 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   }
   const c = card!
   const armed = c.state === 'armed'
-  const border = c.state === 'sent' ? C.green : c.state === 'refused' || c.state === 'limited' ? C.red : c.state === 'cancelled' ? C.muted : C.amber
-  if (c.quick) {
-    // Character mode's quick send: one slim line, still cancellable by button or by voice.
+  const border = c.state === 'sent' ? C.green : c.state === 'refused' || c.state === 'limited' || c.state === 'unknown' ? C.red : c.state === 'cancelled' ? C.muted : C.amber
+  const stateWord = c.state === 'sending' ? 'SENDING…' : c.state === 'unknown' ? 'OUTCOME UNKNOWN' : c.state.toUpperCase()
+  // A quick send that failed, or whose outcome is unknown, gets the full card: the slim line has no room for why.
+  if (c.quick && c.state !== 'refused' && c.state !== 'limited' && c.state !== 'unknown') {
+    // Character mode's quick send: one slim line, still cancellable by button or by voice. The card is quick only when
+    // the whole message fits here (QUICK_MAX_CHARS), so the text is never cut.
     return (
       <group position={[0, CORE_Y - 0.17, z]}>
-        <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="row" alignItems="center" gap={12} width={760} paddingX={14} paddingY={8} borderRadius={8} borderWidth={2} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
+        <Container key={`quick:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="row" alignItems="center" gap={12} width={760} paddingX={14} paddingY={8} borderRadius={8} borderWidth={2} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
           <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={voice.character?.accent ?? C.cyan}>
             {fit(`TO ${c.callsign.toUpperCase()}`, 'rajdhani-700')}
           </Text>
           <Text fontFamily="inter" fontWeight="semi-bold" fontSize={19} color={C.white} flexShrink={1} flexGrow={1}>
-            {fit(clip(c.text, 90))}
+            {fit(c.text)}
           </Text>
           {armed ? (
             <>
@@ -534,7 +549,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
           ) : (
             <>
               <Text fontFamily="rajdhani" fontWeight="bold" fontSize={22} color={border}>
-                {c.state === 'sending' ? 'SENDING…' : c.state.toUpperCase()}
+                {stateWord}
               </Text>
               {c.state !== 'sending' && c.state !== 'sent' && <Button label="DISMISS" colour={C.muted} onClick={() => voiceRef.current.dismissCard()} width={130} />}
             </>
@@ -545,7 +560,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   }
   return (
     <group position={[0, CORE_Y - 0.1, z]}>
-      <Container pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
+      <Container key={`card:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={10} borderWidth={3} borderColor={border} backgroundColor={rgba(6, 9, 11, 0.96)}>
         <Container flexDirection="row" alignItems="center" gap={12}>
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={24} color={C.muted}>
             TO
@@ -557,9 +572,10 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
             {!fleetIds.has(c.sessionId) ? 'no longer in the fleet' : c.viaDispatcher ? 'no session named, so the dispatcher' : c.viaFocus ? 'the selected tile' : ''}
           </Text>
         </Container>
-        <Container backgroundColor={rgba(255, 255, 255, 0.06)} borderRadius={6} padding={12}>
-          <Text fontFamily="inter" fontWeight="semi-bold" fontSize={26} lineHeight={1.35} color={C.white}>
-            {fit(clip(c.text, 400))}
+        {/* The whole message, never cut: past eight lines it scrolls inside the card (drag it with the ray). */}
+        <Container backgroundColor={rgba(255, 255, 255, 0.06)} borderRadius={6} padding={12} flexDirection="column" maxHeight={CARD_TEXT_MAX_H} overflow="scroll" scrollbarColor={C.cyanDim} scrollbarWidth={6}>
+          <Text fontFamily="inter" fontWeight="semi-bold" fontSize={26} lineHeight={1.35} color={C.white} flexShrink={0}>
+            {fit(c.text)}
           </Text>
         </Container>
         {armed ? (
@@ -572,8 +588,8 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
           </Container>
         ) : (
           <Container flexDirection="row" alignItems="center" gap={14}>
-            <Text fontFamily="rajdhani" fontWeight="bold" fontSize={26} color={border}>
-              {c.state === 'sending' ? 'SENDING…' : c.state.toUpperCase()}
+            <Text fontFamily="rajdhani" fontWeight="bold" fontSize={26} color={border} flexShrink={0}>
+              {stateWord}
             </Text>
             <Text fontFamily="inter" fontSize={18} color={C.body} flexShrink={1}>
               {fit(c.detail ?? '')}

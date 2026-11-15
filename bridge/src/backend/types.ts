@@ -20,7 +20,12 @@ export interface SessionBackend {
   list(): Promise<Fleet>
   /** Updates until the returned function is called. The first arrives soon after subscribing. */
   subscribe(listener: (update: FleetUpdate) => void): () => void
-  send(id: string, text: string): Promise<SendResult>
+  /**
+   * `requestId`, when the HUD gave one, names this send for its whole life:
+   * a backend that can pass an idempotency key on (T3's clientRequestId)
+   * passes one made from it, so a retry is the same request there too.
+   */
+  send(id: string, text: string, requestId?: string): Promise<SendResult>
   interrupt(id: string): Promise<void>
   pending(): Promise<Need[]>
   respond(reqId: string, answer: string): Promise<void>

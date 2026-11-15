@@ -3,7 +3,7 @@
 // stale data as a quiet fleet.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { BackendStatus, BuildInfo, ClientMessage, Fleet, ServerMessage, SpokenLine, VoiceStatus } from '../../../shared/protocol.ts'
+import type { BackendStatus, BuildInfo, ClientMessage, Conversation, Fleet, ServerMessage, SpokenLine, VoiceStatus } from '../../../shared/protocol.ts'
 import { checkToken } from '../pairing.ts'
 
 export type Link = 'connecting' | 'open' | 'down' | 'unauthorized'
@@ -21,11 +21,13 @@ export interface BridgeState {
   voice: VoiceStatus | null
   /** The last line character mode spoke up with, unprompted. */
   announce: SpokenLine | null
+  /** Character mode's conversation, as the bridge last pushed it; null from a bridge that keeps none. */
+  conversation: Conversation | null
   /** Sends to the bridge on the open socket; dropped while it is down, and the next open repeats what matters. */
   post: (m: ClientMessage) => void
 }
 
-const INITIAL: Omit<BridgeState, 'post'> = { link: 'connecting', linkError: null, fleet: null, status: null, heardAt: null, downSince: null, build: null, voice: null, announce: null }
+const INITIAL: Omit<BridgeState, 'post'> = { link: 'connecting', linkError: null, fleet: null, status: null, heardAt: null, downSince: null, build: null, voice: null, announce: null, conversation: null }
 
 /**
  * The build this page loaded with, as the bridge first named it. In dev
@@ -105,6 +107,7 @@ export function useBridge(token: string): BridgeState {
           build: m.type === 'hello' || m.type === 'build' ? (m.build ?? null) : s.build,
           voice: m.type === 'hello' || m.type === 'voice' ? (m.voice ?? null) : s.voice,
           announce: m.type === 'line' ? m.line : s.announce,
+          conversation: m.type === 'conversation' ? m.conversation : s.conversation,
         }))
       }
       ws.onclose = async ev => {

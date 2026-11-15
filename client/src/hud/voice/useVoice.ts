@@ -6,37 +6,38 @@
 // A `tell` becomes a card ("To Tally: ...") shown on screen, not spoken, with
 // a short countdown. When the countdown ends the card sends itself through
 // POST /api/send; "Send now" skips the wait and "Cancel" (button or voice)
-// stops it. Talking pauses the countdown.
+// stops it. Talking pauses the countdown. When a card sends, and what its
+// answer may change, is decided in sendcard.ts, which has its own tests; this
+// hook feeds it the phase and draws what it says.
 //
 // Character mode (a character selected on the bridge) changes the words and
 // the wait, never what is done: the action is taken here at once, exactly as
 // in operator mode, a short tone says he was heard, and the character's line
 // is fetched and spoken when it is ready. A character with confirm "quick"
-// arms a 2 s countdown shown as a slim line instead of the 5 s card. The
+// arms a 2 s countdown shown as a slim line instead of the 5 s card, when the
+// whole message fits on the line; a longer one gets the full card. The
 // bridge may also push unprompted lines; they are spoken, never acted on,
 // and held back while he talks or while muted.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Candidate, CharacterInfo, ClientMessage, Interpretation, PendingLine, SpokenLine, Transcript, VoiceContext, VoiceStatus } from '../../../../shared/protocol.ts'
+import type { Candidate, CharacterInfo, CharacterReply, ClientMessage, Interpretation, PendingLine, SpokenLine, Transcript, VoiceContext, VoiceStatus } from '../../../../shared/protocol.ts'
 import { unlockAudio } from './audio-context.ts'
 import { ui } from './blip.ts'
 import { MicError, Recorder } from './recorder.ts'
 import { Speaker } from './speaker.ts'
 import { bridgeStt, fetchLine, type ClientSttProvider } from './stt.ts'
+import { SendCards, UNKNOWN_DETAIL, postSend, randomRequestId, type Card, type SendOutcome } from './sendcard.ts'
+
+export { DISMISS_MS, QUICK_COUNTDOWN_MS, QUICK_MAX_CHARS, SEND_COUNTDOWN_MS, type Card, type CardState } from './sendcard.ts'
 
 /** How long a "who is it for?" waits for its answer. */
 export const CARD_TTL_MS = 60_000
-/** How long a card shows before it sends itself: the window to read it and cancel. */
-export const SEND_COUNTDOWN_MS = 5_000
-/** A character with confirm "quick": shorter, never zero, since speech-to-text mishears and a sent message cannot be recalled. */
-export const QUICK_COUNTDOWN_MS = 2_000
 /** An unprompted line that could not be spoken for this long (he was talking, a reply was playing) is dropped. */
 const ANNOUNCE_STALE_MS = 15_000
-/** How long a sent or cancelled card stays up before it clears itself. */
-export const DISMISS_MS = 2_500
 /** A press shorter than this is a slip, not an utterance. */
 export const MIN_CLIP_MS = 350
 const MUTE_KEY = 'claudevr.muted'
+const NO_CHARACTERS: CharacterInfo[] = []
 
 export type Phase =
   | { kind: 'idle'; note: string | null }
@@ -45,24 +46,8 @@ export type Phase =
   | { kind: 'transcribing' }
   | { kind: 'failed'; title: string; detail: string }
 
-export type CardState = 'armed' | 'sending' | 'sent' | 'refused' | 'limited' | 'expired' | 'cancelled'
-
-export interface Card {
-  id: number
-  sessionId: string
-  callsign: string
-  text: string
-  viaDispatcher: boolean
-  viaFocus: boolean
-  /** When the countdown ends and the card sends itself. */
-  sendAt: number
-  /** The whole countdown, restarted in full after he talks. */
-  countdownMs: number
-  /** Shown as a slim line rather than the full card. */
-  quick: boolean
-  state: CardState
-  detail: string | null
-}
+/** Holding to talk, waiting for the mic, or transcribing: the countdown waits. */
+const isTalking = (p: Phase) => p.kind === 'recording' || p.kind === 'transcribing' || p.kind === 'mic'
 
 export interface Which {
   text: string
@@ -133,12 +118,6 @@ export interface VoiceOptions {
    * the person, carry on.
    */
   immersive: { readonly current: boolean }
-  /**
-   * A reason this message may not be armed, or null. Instrument mode refuses
-   * speech that would fall through to the dispatcher while a demo tile is
-   * selected, so a demo tile can never send anything anywhere.
-   */
-  refuseSend?: { readonly current: ((m: { sessionId: string; viaDispatcher: boolean; viaFocus: boolean }) => string | null) | null }
   /** The last unprompted line the bridge pushed, to speak. */
   announce?: SpokenLine | null
   /** Tells the bridge whether this HUD is muted and whether he is holding to talk. */
@@ -167,6 +146,14 @@ export interface Voice {
   sttLoading: boolean
   /** The selected character, or null in operator mode. */
   character: CharacterInfo | null
+  /** Every configured character, for the character buttons; empty when there are none. */
+  characters: CharacterInfo[]
+  /** A character button press on its way to the bridge (name null: operator mode), or null. */
+  characterPending: { name: string | null } | null
+  /** Why the last character button press failed, or null. */
+  characterError: string | null
+  /** The character buttons: select a character, or null for operator mode. Answered as "be X" would be. */
+  chooseCharacter: (name: string | null) => void
   /** The character whose line is being written, or null. */
   lineWaiting: string | null
   /** The last unprompted line, as spoken. */
@@ -177,7 +164,7 @@ export interface Voice {
   speaker: Speaker
   begin: () => Promise<void>
   end: (how: EndHow) => Promise<void>
-  send: () => Promise<void>
+  send: () => void
   cancel: (why: string) => void
   dismissCard: () => void
   pick: (c: Candidate) => void
@@ -196,7 +183,6 @@ export function useVoice(o: VoiceOptions): Voice {
   const homeRef = useRef(o.onHome)
   homeRef.current = o.onHome
   const immersive = o.immersive
-  const refuseSend = o.refuseSend
   const stt: ClientSttProvider = useMemo(() => bridgeStt(token), [token])
   const recorder = useMemo(() => new Recorder(), [])
   const speaker = useMemo(() => new Speaker(token), [token])
@@ -206,6 +192,11 @@ export function useVoice(o: VoiceOptions): Voice {
   const [lineWaiting, setLineWaiting] = useState<string | null>(null)
   const [announced, setAnnounced] = useState<SpokenLine | null>(null)
   const character = voice?.persona?.character ?? null
+  const characters = voice?.persona?.characters ?? NO_CHARACTERS
+  const [characterPending, setCharacterPending] = useState<{ name: string | null } | null>(null)
+  const characterPendingRef = useRef(characterPending)
+  characterPendingRef.current = characterPending
+  const [characterError, setCharacterError] = useState<string | null>(null)
   const characterRef = useRef(character)
   characterRef.current = character
   /** Bumped by every new hold and every new answer, so a line that arrives late is not spoken over newer words. */
@@ -218,16 +209,33 @@ export function useVoice(o: VoiceOptions): Voice {
   const [voiceOutError, setVoiceOutError] = useState<string | null>(null)
   // Refs mirror the state the event handlers read, so a handler bound on one
   // render never acts on a card that has since changed.
-  const cardRef = useRef<Card | null>(null)
   const whichRef = useRef<Which | null>(null)
   const holding = useRef(false)
   const phaseRef = useRef<Phase>(phase)
   const mutedRef = useRef(muted)
-  const cardSeq = useRef(0)
-  const setCard = (c: Card | null) => {
-    cardRef.current = c
-    setCardState(c)
-  }
+  // The card itself lives in SendCards, which calls these through refs so it never holds a stale token or speaker.
+  const postRef = useRef<(c: Card) => Promise<SendOutcome>>(() => Promise.reject(new Error('not ready')))
+  postRef.current = c => postSend((url, init) => fetch(url, init), token, c)
+  const outcomeRef = useRef<(c: Card, o: SendOutcome, current: boolean) => void>(() => {})
+  const cards = useMemo(
+    () =>
+      new SendCards({
+        now: () => Date.now(),
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: h => clearTimeout(h as ReturnType<typeof setTimeout>),
+        newRequestId: randomRequestId,
+        post: c => postRef.current(c),
+        onChange: setCardState,
+        onSending: (c, how) => tap('voice-send', { chars: c.text.length, how }),
+        onOutcome: (c, o, current) => outcomeRef.current(c, o, current),
+      }),
+    [],
+  )
+  useEffect(() => () => cards.dispose(), [cards])
+  /** The intent a clip was recorded under: a Cancel since then makes what it says stale. */
+  const clipIntent = useRef(0)
+  /** The clip upload in flight, so Cancel can abandon it. */
+  const upload = useRef<AbortController | null>(null)
   const setWhich = (w: Which | null) => {
     whichRef.current = w
     setWhichState(w)
@@ -235,6 +243,7 @@ export function useVoice(o: VoiceOptions): Voice {
   const go = (p: Phase) => {
     phaseRef.current = p
     setPhase(p)
+    cards.setTalking(isTalking(p))
   }
   mutedRef.current = muted
 
@@ -251,62 +260,61 @@ export function useVoice(o: VoiceOptions): Voice {
   )
 
   // ---------------------------------------------------------------- send
-  const send = useCallback(async () => {
-    const c = cardRef.current
-    if (!c || c.state !== 'armed') return
-    setCard({ ...c, state: 'sending', detail: null })
-    tap('voice-send', { chars: c.text.length })
-    let r: Response
-    let body: { error?: string; said?: string } = {}
-    try {
-      r = await fetch('/api/send', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: c.sessionId, text: c.text }), cache: 'no-store' })
-      body = (await r.json().catch((err: unknown) => ({ error: `unreadable reply: ${String(err)}` }))) as typeof body
-    } catch (err) {
-      console.error('voice: send failed:', err)
-      setCard({ ...c, state: 'refused', detail: `Not sent: bridge unreachable (${err instanceof Error ? err.message : String(err)}).` })
-      tap('voice-sent', { ok: false, why: 'unreachable' })
-      speak('Not sent. The bridge is unreachable.')
+  const send = useCallback(() => {
+    cards.sendNow()
+  }, [cards])
+
+  // What became of a send. Spoken in operator mode; in character mode a sent
+  // message gets a tone (instrument mode plays its own on sending), since the
+  // character has already spoken about it.
+  outcomeRef.current = (c, o, current) => {
+    tap('voice-sent', { ok: o.kind === 'sent', outcome: o.kind, status: o.kind === 'refused' ? o.status : undefined, late: current ? undefined : true })
+    if (!current) {
+      // A newer card took the screen while this one was on its way. Its
+      // answer must not replace that card, and must not go unseen either.
+      const what = o.kind === 'sent' ? 'sent.' : o.kind === 'unknown' ? UNKNOWN_DETAIL.replace(/^N/, 'n') : o.kind === 'limited' ? 'rate limited, not sent.' : `refused (HTTP ${o.status}), not sent.`
+      const note = `Earlier message to ${c.callsign}: ${what}`
+      console.warn(`voice: ${note}`)
+      if (phaseRef.current.kind === 'idle') go({ kind: 'idle', note })
+      if (!talkingRef.current && !(o.kind === 'sent' && characterRef.current)) speak(note)
       return
     }
-    tap('voice-sent', { ok: r.ok, status: r.status })
-    if (r.ok) {
-      setCard({ ...c, state: 'sent', detail: body.said ? `Sent. ${body.said}` : 'Sent.' })
-      // In character the character has already spoken about this message; a
-      // tone says it went (instrument mode plays its own on sending).
-      if (characterRef.current) {
-        if (!immersive.current) ui.sent()
-      } else speak(`Sent to ${c.callsign}.`)
-    } else if (r.status === 429) {
-      const wait = Number(r.headers.get('retry-after')) || null
-      setCard({ ...c, state: 'limited', detail: `Rate limited: not sent. Try again in ${wait ?? '?'} s.` })
-      speak(`Rate limited. Try again in ${wait ?? 'a few'} seconds.`)
-    } else {
-      setCard({ ...c, state: 'refused', detail: `Refused (HTTP ${r.status}): ${body.error ?? 'no reason given'}. Not sent.` })
-      speak(`Refused. ${body.error ?? ''}`)
+    switch (o.kind) {
+      case 'sent':
+        if (characterRef.current) {
+          if (!immersive.current) ui.sent()
+        } else speak(`Sent to ${c.callsign}.`)
+        return
+      case 'limited':
+        return speak(`Rate limited. Try again in ${o.retryAfterS ?? 'a few'} seconds.`)
+      case 'refused':
+        return speak(`Refused. ${o.error ?? ''}`)
+      case 'unknown':
+        return speak(UNKNOWN_DETAIL)
     }
-  }, [token, speak])
+  }
 
-  const cancel = useCallback((why: string) => {
-    const c = cardRef.current
-    if (c?.state === 'armed') {
-      setCard({ ...c, state: 'cancelled', detail: why })
-      tap('voice-cancelled')
-    }
-    if (whichRef.current) setWhich(null)
-  }, [])
+  const cancel = useCallback(
+    (why: string) => {
+      // A clip still being transcribed is abandoned with the card: what it says must not arm a fresh one.
+      if (upload.current) {
+        upload.current.abort()
+        upload.current = null
+        tap('voice-transcribe-abandoned')
+      }
+      if (cards.cancel(why)) tap('voice-cancelled')
+      if (whichRef.current) setWhich(null)
+    },
+    [cards],
+  )
 
-  const arm = (sessionId: string, callsign: string, text: string, viaDispatcher: boolean, viaFocus = false) => {
+  /** Arms a card. `generation`: the intent the words came under; a stale one arms nothing. */
+  const arm = (sessionId: string, callsign: string, text: string, viaDispatcher: boolean, viaFocus = false, generation?: number) => {
+    if (generation !== undefined && !cards.isCurrent(generation)) return tap('voice-arm-dropped', { why: 'cancelled since' })
     setWhich(null)
-    const refused = refuseSend?.current?.({ sessionId, viaDispatcher, viaFocus }) ?? null
-    if (refused) {
-      setReply({ say: refused, lines: null, spoken: null })
-      tap('voice-refused', { why: refused })
-      return
-    }
-    const quick = characterRef.current?.confirm === 'quick'
-    const countdownMs = quick ? QUICK_COUNTDOWN_MS : SEND_COUNTDOWN_MS
-    setCard({ id: ++cardSeq.current, sessionId, callsign, text, viaDispatcher, viaFocus, sendAt: Date.now() + countdownMs, countdownMs, quick, state: 'armed', detail: null })
-    tap('voice-armed', { chars: text.length, viaDispatcher, viaFocus, quick })
+    const quickConfirm = characterRef.current?.confirm === 'quick'
+    const c = cards.arm({ sessionId, callsign, text, viaDispatcher, viaFocus, quickConfirm }, generation)
+    if (c) tap('voice-armed', { chars: text.length, viaDispatcher, viaFocus, quick: c.quick, quickConfirm })
   }
 
   // A "who is it for?" lapses on its own.
@@ -318,42 +326,11 @@ export function useVoice(o: VoiceOptions): Voice {
     return () => clearInterval(t)
   }, [])
 
-  // The countdown: an armed card sends itself when it ends. Holding to talk
-  // (to say "cancel", or anything else) pauses it, and it starts again in
-  // full afterwards if the card is still armed.
-  const armedId = card?.state === 'armed' ? card.id : null
-  const talking = phase.kind === 'recording' || phase.kind === 'transcribing' || phase.kind === 'mic'
+  const talking = isTalking(phase)
   const talkingRef = useRef(talking)
   talkingRef.current = talking
-  useEffect(() => {
-    if (armedId === null || talking) return
-    const c = cardRef.current
-    if (!c || c.id !== armedId || c.state !== 'armed') return
-    setCard({ ...c, sendAt: Date.now() + c.countdownMs })
-    const t = setTimeout(() => void send(), c.countdownMs)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [armedId, talking, send])
 
-  const tick = useCallback(
-    (now: number) => {
-      const c = cardRef.current
-      if (c?.state === 'armed' && !talkingRef.current && now >= c.sendAt) void send()
-    },
-    [send],
-  )
-
-  // A card that has done its job (sent, or cancelled) clears itself. One
-  // that failed (refused, rate limited) stays until it is dismissed, so a
-  // message that did not go is never missed.
-  const doneId = card && (card.state === 'sent' || card.state === 'cancelled') ? card.id : null
-  useEffect(() => {
-    if (doneId === null) return
-    const t = setTimeout(() => {
-      if (cardRef.current?.id === doneId) setCard(null)
-    }, DISMISS_MS)
-    return () => clearTimeout(t)
-  }, [doneId])
+  const tick = useCallback((now: number) => cards.tick(now), [cards])
 
   // ---------------------------------------------------------------- character lines
   /** Fetches the character's line and speaks it, unless newer words came first. The bridge answers within its timeout; only a dead link falls back here. */
@@ -383,7 +360,7 @@ export function useVoice(o: VoiceOptions): Voice {
 
   // ---------------------------------------------------------------- meaning
   const act = useCallback(
-    (i: Interpretation, line: PendingLine | null = null) => {
+    (i: Interpretation, line: PendingLine | null = null, generation?: number) => {
       setReply({ say: i.say, lines: i.kind === 'status' || i.kind === 'limits' ? i.lines : null, spoken: null })
       tap('voice-meaning', { kind: i.kind, line: !!line })
       // In character the bridge writes the spoken line; the action below is taken now and does not wait for it.
@@ -397,10 +374,10 @@ export function useVoice(o: VoiceOptions): Voice {
       switch (i.kind) {
         case 'tell':
           // Shown, not spoken: the card on screen is the read-back.
-          arm(i.sessionId, i.callsign, i.text, i.viaDispatcher, i.viaFocus === true)
+          arm(i.sessionId, i.callsign, i.text, i.viaDispatcher, i.viaFocus === true, generation)
           return
         case 'confirm':
-          void send()
+          send()
           return
         case 'cancel':
           cancel('Cancelled by voice. Nothing sent.')
@@ -413,7 +390,7 @@ export function useVoice(o: VoiceOptions): Voice {
         case 'target': {
           const w = whichRef.current
           if (w?.text) {
-            arm(i.sessionId, i.callsign, w.text, false)
+            arm(i.sessionId, i.callsign, w.text, false, false, generation)
           } else {
             setWhich(null)
             selectRef.current(i.sessionId)
@@ -444,12 +421,45 @@ export function useVoice(o: VoiceOptions): Voice {
     [send, cancel, speak, speakLine],
   )
 
-  const context = (): VoiceContext => (cardRef.current?.state === 'armed' ? 'confirm' : whichRef.current ? 'target' : 'none')
+  // ---------------------------------------------------------------- character buttons
+  const chooseCharacter = useCallback(
+    (name: string | null) => {
+      if (characterPendingRef.current) return
+      const pending = { name }
+      characterPendingRef.current = pending
+      setCharacterPending(pending)
+      setCharacterError(null)
+      tap('character-press', { name })
+      const fail = (why: string, err?: unknown) => {
+        console.error(`voice: character button: ${why}`, err ?? '')
+        setCharacterError(why)
+        tap('character-failed', { name, why })
+      }
+      void (async () => {
+        try {
+          const r = await fetch('/api/character', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ name }), cache: 'no-store' })
+          const body = (await r.json().catch((err: unknown) => ({ error: `unreadable reply: ${String(err)}` }))) as Partial<CharacterReply> & { error?: string }
+          if (!r.ok || body.interpretation?.kind !== 'character') return fail(`Could not change character (HTTP ${r.status}): ${body.error ?? 'no reason given'}.`)
+          act(body.interpretation, body.line ?? null)
+        } catch (err) {
+          fail(`Could not change character: bridge unreachable (${err instanceof Error ? err.message : String(err)}).`, err)
+        } finally {
+          characterPendingRef.current = null
+          setCharacterPending(null)
+        }
+      })()
+    },
+    [token, act],
+  )
+
+  const context = (): VoiceContext => (cards.card?.state === 'armed' ? 'confirm' : whichRef.current ? 'target' : 'none')
 
   // ---------------------------------------------------------------- hold to talk
   const begin = useCallback(async () => {
     if (holding.current || phaseRef.current.kind === 'transcribing' || phaseRef.current.kind === 'mic') return
     holding.current = true
+    // A new clip is a new intent: whatever Cancel happens from here on makes this clip stale.
+    clipIntent.current = cards.newIntent()
     unlockAudio()
     speaker.stop()
     // He is talking again: a line still being written for his last words is not spoken over these.
@@ -478,7 +488,7 @@ export function useVoice(o: VoiceOptions): Voice {
       return go({ kind: 'failed', title: 'RECORDER FAILED', detail: err instanceof Error ? err.message : String(err) })
     }
     go({ kind: 'recording', since: Date.now() })
-  }, [recorder, speaker])
+  }, [recorder, speaker, cards])
 
   const end = useCallback(
     async (how: EndHow) => {
@@ -497,8 +507,27 @@ export function useVoice(o: VoiceOptions): Voice {
         return go({ kind: 'failed', title: 'EMPTY CLIP', detail: 'The recorder captured nothing. Is the microphone muted?' })
       }
       if (clip.ms < MIN_CLIP_MS) return go({ kind: 'idle', note: `Too short (${clip.ms} ms): hold while you speak.` })
+      const generation = clipIntent.current
+      if (!cards.isCurrent(generation)) {
+        tap('voice-heard-dropped', { why: 'cancelled while recording' })
+        return go({ kind: 'idle', note: 'Cancelled while you spoke: that clip was not used. Nothing sent.' })
+      }
       go({ kind: 'transcribing' })
-      const r = await stt.transcribe(clip.blob, context(), focusRef.current)
+      const ctl = new AbortController()
+      upload.current = ctl
+      let r: Awaited<ReturnType<ClientSttProvider['transcribe']>>
+      try {
+        r = await stt.transcribe(clip.blob, context(), focusRef.current, ctl.signal)
+      } finally {
+        if (upload.current === ctl) upload.current = null
+      }
+      // Cancelled while it was being transcribed: what it says arms nothing.
+      if (!cards.isCurrent(generation)) {
+        tap('voice-heard-dropped', { why: 'cancelled while transcribing' })
+        // The phase may have moved on during the await, which TS cannot see through the ref.
+        if ((phaseRef.current as Phase).kind === 'transcribing') go({ kind: 'idle', note: 'Cancelled while transcribing: that clip was not used. Nothing sent.' })
+        return
+      }
       const t = r.transcript
       if (!t.ok) {
         const title = FAILURE_TITLES[t.reason]
@@ -510,10 +539,10 @@ export function useVoice(o: VoiceOptions): Voice {
       const via = how === 'leave' ? ' Ended when the pointer left the button.' : ''
       setHeard({ ok: true, text: t.text, detail: `${(t.audioMs / 1000).toFixed(1)} s clip, ${t.totalMs} ms to text (${t.provider}).${via}` })
       go({ kind: 'idle', note: null })
-      if (r.interpretation) act(r.interpretation, r.line ?? null)
+      if (r.interpretation) act(r.interpretation, r.line ?? null, generation)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [recorder, stt, act],
+    [recorder, stt, act, cards],
   )
 
   // The keyboard, for testing on a desktop: hold Space to talk, Enter sends, Escape cancels.
@@ -523,9 +552,9 @@ export function useVoice(o: VoiceOptions): Voice {
       if (e.code === 'Space') {
         e.preventDefault()
         if (!e.repeat) void begin()
-      } else if (e.key === 'Enter' && cardRef.current?.state === 'armed') {
+      } else if (e.key === 'Enter' && cards.card?.state === 'armed') {
         e.preventDefault()
-        void send()
+        send()
       } else if (e.key === 'Escape') cancel('Cancelled. Nothing sent.')
     }
     const up = (e: KeyboardEvent) => {
@@ -565,7 +594,7 @@ export function useVoice(o: VoiceOptions): Voice {
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', hide)
     }
-  }, [begin, end, send, cancel, recorder, speaker, immersive])
+  }, [begin, end, send, cancel, recorder, speaker, immersive, cards])
 
   useEffect(() => () => recorder.release(), [recorder])
 
@@ -647,6 +676,10 @@ export function useVoice(o: VoiceOptions): Voice {
     ttsProblem,
     sttLoading: stt0?.state === 'loading',
     character,
+    characters,
+    characterPending,
+    characterError,
+    chooseCharacter,
     lineWaiting,
     announced,
     frontManProblem,
@@ -656,7 +689,7 @@ export function useVoice(o: VoiceOptions): Voice {
     end,
     send,
     cancel,
-    dismissCard: () => setCard(null),
+    dismissCard: () => cards.dismiss(),
     pick,
     dismissWhich: () => setWhich(null),
     toggleMute,

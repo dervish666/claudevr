@@ -4,23 +4,24 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Need, Session, SessionState } from '../../shared/protocol.ts'
-import { DEMO_MIN, MORE_SLOT, REAL_TILES, assignSlots, planTiles, slotPose, tileExtent, type TileAgent } from '../../client/src/instrument/layout.ts'
+import { MORE_SLOT, REAL_TILES, SUB_ROOM, assignSlots, moreFitsBelow, planSubBoxes, planTiles, slotPose, subBoxExtent, tileExtent, type TileAgent } from '../../client/src/instrument/layout.ts'
+import { FINISHED_SHOWN_MS, runTime, shownAgents } from '../../shared/agents.ts'
+import type { AgentInfo } from '../../shared/protocol.ts'
 import { EMPTY_QUEUE, REPLY_MAX, REPLY_TTL_MS, dismissReply, expireReplies, firstLines, nextExpiry, pushReplies, railItems, replyTriggers, snapshot, type ReplyCard } from '../../client/src/instrument/cards.ts'
 import { hhmm, msToNextMinute } from '../../client/src/time.ts'
 
 const agents = (n: number, state: SessionState = 'idle'): TileAgent[] => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, state, activeAt: 1000 - i }))
 
-test('tile layout: 1 to 12 sessions, nobody dropped, no overlaps', () => {
-  for (let n = 1; n <= 12; n++) {
+test('tile layout: 0 to 12 sessions, nobody dropped, no padding, no overlaps', () => {
+  for (let n = 0; n <= 12; n++) {
     const a = agents(n)
     const slots = assignSlots({}, a)
     const { tiles, hidden } = planTiles(slots, a)
     const real = tiles.filter(t => t.kind === 'session')
-    const demo = tiles.filter(t => t.kind === 'demo')
     const more = tiles.filter(t => t.kind === 'more')
     assert.equal(real.length, Math.min(n, REAL_TILES), `n=${n} real tiles`)
     assert.equal(real.length + hidden.length, n, `n=${n} everyone accounted for`)
-    assert.equal(demo.length, Math.max(0, DEMO_MIN - n), `n=${n} demo padding`)
+    assert.equal(tiles.length, Math.min(n, REAL_TILES) + (n > REAL_TILES ? 1 : 0), `n=${n} only real tiles and the +N tile, no padding`)
     assert.equal(more.length, n > REAL_TILES ? 1 : 0, `n=${n} +N tile`)
     if (more[0]?.kind === 'more') {
       assert.equal(more[0].slot, MORE_SLOT)
@@ -57,6 +58,56 @@ test('tile layout: wings mirror each other and stay clear of the Core', () => {
   // The Core's ring is 0.6 m in radius at about 1.33 m: about 24 degrees.
   const ring = Math.atan(0.6 / 1.33)
   for (let s = 0; s < 12; s++) assert.ok(Math.abs(tileExtent(s)[s % 2 ? 0 : 1]) > ring, `slot ${s} clears the ring`)
+})
+
+test('sub-agent boxes: at 1, 6 and 10 sessions, every tile with a full lane and a "+N", nothing overlaps', () => {
+  for (const n of [1, 6, 10]) {
+    const a = agents(n)
+    const { tiles } = planTiles(assignSlots({}, a), a)
+    const boxes: { what: string; e: [number, number, number, number] }[] = []
+    for (const t of tiles) {
+      boxes.push({ what: `tile ${t.slot}`, e: tileExtent(t.slot) })
+      if (t.kind !== 'session') continue
+      const plan = planSubBoxes(5, 2, moreFitsBelow(t.slot))
+      assert.equal(plan.boxes, SUB_ROOM, `n=${n} slot ${t.slot}: a full lane`)
+      assert.equal(plan.more, 2 + 2)
+      assert.equal(plan.moreAt, 'below', `n=${n} slot ${t.slot}: the +N box fits under the lane`)
+      for (let i = 0; i < plan.boxes; i++) boxes.push({ what: `slot ${t.slot} box ${i}`, e: subBoxExtent(t.slot, i) })
+      boxes.push({ what: `slot ${t.slot} +N`, e: subBoxExtent(t.slot, 'more') })
+    }
+    for (const [i, x] of boxes.entries())
+      for (const y of boxes.slice(i + 1)) {
+        const [l1, r1, b1, t1] = x.e
+        const [l2, r2, b2, t2] = y.e
+        assert.ok(r1 <= l2 || r2 <= l1 || t1 <= b2 || t2 <= b1, `n=${n}: ${x.what} overlaps ${y.what}`)
+      }
+    // Lanes are on the outer side, so the Core's side of each tile stays clear for the tether.
+    for (const b of boxes) assert.ok(Math.min(Math.abs(b.e[0]), Math.abs(b.e[1])) > Math.atan(0.6 / 1.33), `${b.what} clears the ring`)
+  }
+})
+
+test('sub-agent boxes: the cap and the "+N", and fewer boxes when the +N has no room under the lane', () => {
+  assert.deepEqual(planSubBoxes(0, 0), { boxes: 0, more: 0, moreAt: null })
+  assert.deepEqual(planSubBoxes(2, 0), { boxes: 2, more: 0, moreAt: null })
+  assert.deepEqual(planSubBoxes(3, 0), { boxes: 3, more: 0, moreAt: null })
+  assert.deepEqual(planSubBoxes(4, 0), { boxes: 3, more: 1, moreAt: 'below' })
+  assert.deepEqual(planSubBoxes(1, 2), { boxes: 1, more: 2, moreAt: 'below' }, 'running agents the bridge left out still count')
+  assert.deepEqual(planSubBoxes(5, 0, false), { boxes: 2, more: 3, moreAt: 'lane' }, 'no room under: the +N takes the last place')
+  assert.deepEqual(planSubBoxes(1, 1, false), { boxes: 1, more: 1, moreAt: 'lane' })
+  assert.deepEqual(planSubBoxes(-3, Number.NaN), { boxes: 0, more: 0, moreAt: null })
+})
+
+test('sub-agent boxes: running always show, finished ones for two minutes after they end', () => {
+  const now = 10_000_000
+  const ag = (id: string, state: AgentInfo['state'], endedAt: number | null, startedAt: number | null = now - 600_000): AgentInfo => ({ id, type: 't', description: 'd', state, model: null, startedAt, endedAt, now: null, depth: 1, brief: null, recent: [] })
+  const s = { agents: [ag('run', 'running', null, now - 9e9), ag('just', 'done', now - 30_000), ag('old', 'done', now - FINISHED_SHOWN_MS - 1), ag('bad', 'failed', now - 1000), ag('noend', 'unknown', null)], moreRunning: 2 }
+  const r = shownAgents(s, now)
+  assert.deepEqual(r.agents.map(a => a.id), ['run', 'just', 'bad'])
+  assert.equal(r.hiddenRunning, 2)
+  assert.deepEqual(shownAgents({}, now), { agents: [], hiddenRunning: 0 })
+  assert.equal(runTime({ startedAt: now - 250_000, endedAt: null }, now), '4m 10s')
+  assert.equal(runTime({ startedAt: now - 35_000, endedAt: now - 5000 }, now), '30s')
+  assert.equal(runTime({ startedAt: null, endedAt: null }, now), null)
 })
 
 test('tile layout: slots are sticky as the fleet grows, and a shrinking fleet moves in', () => {

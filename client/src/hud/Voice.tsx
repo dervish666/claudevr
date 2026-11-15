@@ -2,12 +2,15 @@
 // voice/useVoice.ts. Hold to talk, what was heard, what it meant, and the
 // read-back card with its countdown, Send now and Cancel.
 
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Fleet } from '../../../shared/protocol.ts'
-import type { Voice } from './voice/useVoice.ts'
+import type { CardState, Voice } from './voice/useVoice.ts'
+import { displayName } from './conversation.ts'
 
 export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet | null; now: number; focusId: string | null }) {
-  const focusCallsign = focusId ? (fleet?.sessions.find(s => s.id === focusId)?.callsign ?? null) : null
+  const focused = focusId ? (fleet?.sessions.find(s => s.id === focusId) ?? null) : null
+  // In character mode the dispatcher's panel is the character's, so speech there is "to" the character.
+  const focusCallsign = focused ? (focused.kind === 'dispatcher' && v.character ? displayName(v.character.name) : focused.callsign) : null
   const { phase, heard, reply, card, which, muted, voiceOutError, talking, sttProblem, ttsProblem, character, lineWaiting, announced, frontManProblem } = v
 
   // The pointer: the Quest's controller ray and trigger arrive as pointer
@@ -50,6 +53,9 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
         </div>
       )}
 
+      {v.characters.length > 0 && <CharacterButtons v={v} />}
+
+      {/* The quick line takes a message only when the whole of it fits (sendcard.ts), so its text wraps and is never cut. */}
       {card?.quick && (
         <div className={`quickline rb-${card.state}`} aria-live="assertive">
           <span className="ql-to">
@@ -66,7 +72,7 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
             </>
           ) : (
             <span className="rb-result">
-              <span className="rb-state">{card.state === 'sending' ? 'SENDING…' : card.state.toUpperCase()}</span> {card.state === 'sent' || card.state === 'sending' ? '' : card.detail}
+              <span className="rb-state">{stateWord(card.state)}</span> {card.state === 'sent' || card.state === 'sending' ? '' : card.detail}
               {card.state !== 'sending' && card.state !== 'sent' && (
                 <button className="link" onClick={v.dismissCard}>
                   dismiss
@@ -98,7 +104,7 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
             </div>
           ) : (
             <div className="rb-result">
-              <span className="rb-state">{card.state === 'sending' ? 'SENDING…' : card.state.toUpperCase()}</span> {card.detail}
+              <span className="rb-state">{stateWord(card.state)}</span> {card.detail}
               {card.state !== 'sending' && (
                 <button className="link" onClick={v.dismissCard}>
                   dismiss
@@ -202,6 +208,40 @@ export function VoiceDock({ v, fleet, now, focusId }: { v: Voice; fleet: Fleet |
         </button>
       </div>
     </section>
+  )
+}
+
+const stateWord = (s: CardState) => (s === 'sending' ? 'SENDING…' : s === 'unknown' ? 'OUTCOME UNKNOWN' : s.toUpperCase())
+
+/** One button per configured character, and Operator. The lit one is on; a press waits for the bridge, and a refusal shows as text. */
+function CharacterButtons({ v }: { v: Voice }) {
+  const current = v.character?.name ?? null
+  const buttons = [...v.characters.map(c => ({ name: c.name as string | null, label: displayName(c.name), accent: c.accent })), { name: null, label: 'Operator', accent: null }]
+  return (
+    <div className="char-row" role="group" aria-label="Character">
+      {buttons.map(b => {
+        const on = b.name === current
+        const pending = v.characterPending !== null && v.characterPending.name === b.name
+        return (
+          <button
+            key={b.name ?? 'operator'}
+            className={`char-btn${on ? ' on' : ''}${pending ? ' pending' : ''}`}
+            style={b.accent ? ({ '--char-accent': b.accent } as CSSProperties) : undefined}
+            aria-pressed={on}
+            disabled={v.characterPending !== null}
+            onClick={() => v.chooseCharacter(b.name)}
+          >
+            {b.label}
+            {pending && <span className="char-pending"> …</span>}
+          </button>
+        )
+      })}
+      {v.characterError && (
+        <span className="char-error" role="alert">
+          {v.characterError}
+        </span>
+      )}
+    </div>
   )
 }
 

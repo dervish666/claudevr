@@ -1,56 +1,26 @@
 // The reader: one session filling the window, its replies in full and large.
 // Opened by tapping a card, a needs-you item, or by voice ("switch to X").
 // The fleet's own messages are short clips; the full turns come from
-// GET /api/transcript, re-read while the reader is open.
+// GET /api/transcript, re-read while the reader is open (transcript.ts, shared
+// with the instrument Stream).
 
-import { useEffect, useState, type ReactNode } from 'react'
-import type { Session, SessionTranscript, Turn } from '../../../shared/protocol.ts'
+import { useMemo, type ReactNode } from 'react'
+import type { CharacterInfo, Conversation, Session } from '../../../shared/protocol.ts'
 import { age } from './useBridge.ts'
 import { ContextBadge } from './Usage.tsx'
+import { displayName, useStreamItems } from './conversation.ts'
+import { useTranscriptPoll } from './transcript.ts'
 
-const REFRESH_MS = 6000
-const TURNS = 12
-
-/** Why the full turns are not on screen. "none": this session has none to give. "failed": the read broke. */
-type Problem = { kind: 'none' | 'failed'; why: string }
-
-export function Reader({ s, token, now, stateWord, waiting, onClose }: { s: Session; token: string; now: number; stateWord: string; waiting: number; onClose: () => void }) {
-  const [turns, setTurns] = useState<Turn[] | null>(null)
-  const [problem, setProblem] = useState<Problem | null>(null)
-  const [loaded, setLoaded] = useState(false)
+export function Reader({ s, token, now, stateWord, waiting, onClose, character = null, conversation = null }: { s: Session; token: string; now: number; stateWord: string; waiting: number; onClose: () => void; character?: CharacterInfo | null; conversation?: Conversation | null }) {
   // A new last line or state means the session said or did something: read again now.
-  const changed = `${s.lastLine ?? ''}|${s.state}`
+  const { turns, problem, loaded } = useTranscriptPoll(token, s.id, `${s.lastLine ?? ''}|${s.state}`)
 
-  useEffect(() => {
-    let live = true
-    const read = async () => {
-      let next: { turns: Turn[] } | Problem
-      try {
-        const r = await fetch(`/api/transcript?session=${encodeURIComponent(s.id)}&limit=${TURNS}`, { headers: { authorization: `Bearer ${token}` }, cache: 'no-store' })
-        const body = (await r.json()) as Partial<SessionTranscript> & { error?: string }
-        if (r.ok && Array.isArray(body.turns)) next = { turns: body.turns }
-        else next = { kind: r.status === 404 || r.status === 501 ? 'none' : 'failed', why: body.error ?? `HTTP ${r.status}` }
-      } catch (err) {
-        console.error('reader: transcript read failed:', err)
-        next = { kind: 'failed', why: err instanceof Error ? err.message : String(err) }
-      }
-      if (!live) return
-      setLoaded(true)
-      if ('turns' in next) {
-        setTurns(next.turns)
-        setProblem(null)
-      } else setProblem(next) // keep the turns already on screen, and say they may be old
-    }
-    void read()
-    const t = setInterval(() => void read(), REFRESH_MS)
-    return () => {
-      live = false
-      clearInterval(t)
-    }
-  }, [s.id, token, changed])
-
+  // With a character on, the dispatcher's panel is the character's: its name on top, its lines among the turns.
+  const asCharacter = s.kind === 'dispatcher' && character !== null
+  const base = useMemo(() => turns ?? s.messages.map(m => ({ role: 'session' as const, text: m.text, clipped: false })), [turns, s.messages])
+  const items = useStreamItems(base, conversation, character, asCharacter)
   // Newest first, so the latest reply sits under the header with no scrolling.
-  const shown: Turn[] = (turns ?? s.messages.map(m => ({ role: 'session' as const, text: m.text, clipped: false }))).slice().reverse()
+  const shown = items.slice().reverse()
 
   return (
     <section className="reader" aria-label={`Reading ${s.callsign}`}>
@@ -60,7 +30,8 @@ export function Reader({ s, token, now, stateWord, waiting, onClose }: { s: Sess
           {waiting > 0 && <span className="reader-waiting">{waiting} waiting on you</span>}
         </button>
         <div className="reader-who">
-          <span className="callsign">{s.callsign}</span>
+          <span className="callsign">{asCharacter ? displayName(character.name) : s.callsign}</span>
+          {asCharacter && <span className="reader-via">via dispatcher</span>}
           <span className={`state st-${s.state}`}>{stateWord}</span>
           <ContextBadge c={s.context} big />
           <span className="focus-meta">
@@ -95,13 +66,20 @@ export function Reader({ s, token, now, stateWord, waiting, onClose }: { s: Sess
         <div className="empty">Nothing said yet.</div>
       ) : (
         <ol className="turns">
-          {shown.map((t, i) => (
-            <li key={`${shown.length - i}-${t.role}`} className={`turn r-${t.role}`}>
-              <span className="turn-who">{t.role === 'you' ? 'You' : t.role === 'session' ? s.callsign : 'Note'}</span>
-              <div className="turn-text">{markdown(t.text)}</div>
-              {t.clipped && <div className="reader-note">Cut here. The rest is on the Mac.</div>}
-            </li>
-          ))}
+          {shown.map((it, i) =>
+            it.kind === 'character' ? (
+              <li key={`c-${it.entry.id}`} className="turn r-character">
+                <span className="turn-who">{displayName(character?.name ?? 'character')}</span>
+                <div className="turn-text">{it.entry.text}</div>
+              </li>
+            ) : (
+              <li key={`${shown.length - i}-${it.turn.role}`} className={`turn r-${it.turn.role}`}>
+                <span className="turn-who">{it.turn.role === 'you' ? 'You' : it.turn.role === 'session' ? s.callsign : 'Note'}</span>
+                <div className="turn-text">{markdown(it.turn.text)}</div>
+                {it.turn.clipped && <div className="reader-note">Cut here. The rest is on the Mac.</div>}
+              </li>
+            ),
+          )}
         </ol>
       )}
     </section>

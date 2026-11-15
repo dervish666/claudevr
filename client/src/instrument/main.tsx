@@ -9,7 +9,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { PointerEvents, XR, noEvents, useXR } from '@react-three/xr'
 import { signal } from '@preact/signals-core'
 import { BackSide, Euler, Quaternion, Vector3, type Group, type Object3D } from 'three'
-import type { Session } from '../../../shared/protocol.ts'
+import type { AgentInfo, Session } from '../../../shared/protocol.ts'
 import type { BridgeState } from '../hud/useBridge.ts'
 import { IN_INSTRUMENT_KEY } from '../hud/InstrumentEntry.tsx'
 import { unlockAudio } from '../hud/voice/audio-context.ts'
@@ -23,9 +23,11 @@ import { FRAMEBUFFER_SCALE, countTextures, glTextures, store } from './store.ts'
 import { RADIUS, StreamLayer, StreamMesh, streamScroll, useTranscript, type Target } from './Stream.tsx'
 import { countRender, flush, frameStats, frameTick, log, resetFrames, startTelemetry, takeRenders } from './telemetry.ts'
 import { C, STATE_WORDS, stateColour } from './theme.ts'
-import { Tether, Tiles, isDemoId, itemId, slotPose, useTiles } from './Tiles.tsx'
+import { Tether, Tiles, itemId, slotPose, useTiles } from './Tiles.tsx'
 import { Rail, ReplyCards, useReplies } from './Cards.tsx'
 import { LineBatch, LineWork } from './linework.tsx'
+import { CharacterButtons } from './Characters.tsx'
+import { DispatcherStrip } from './SubAgents.tsx'
 
 /** A press on the iris shorter than this is a tap (back to the dispatcher), not speech. */
 const TAP_MS = 350
@@ -116,7 +118,7 @@ export interface InstrumentProps {
   bridge: BridgeState
   voice: Voice
   alarms: string[]
-  /** The selected tile's id (a session or a demo tile), null for the dispatcher. */
+  /** The selected tile's id (a session), null for the dispatcher. */
   selected: string | null
   onSelect: (id: string | null) => void
   /** Read by the voice hook: true while a session runs. */
@@ -137,7 +139,7 @@ interface GateProps extends InstrumentProps {
  * read from `latest` when they run, so they are never stale.
  */
 function sameGate(a: GateProps, b: GateProps): boolean {
-  return a.mode === b.mode && a.token === b.token && a.bridge.fleet === b.bridge.fleet && a.selected === b.selected && a.immersive === b.immersive && a.latest === b.latest && a.alarms.join('\n') === b.alarms.join('\n') && sameVoice(a.voice, b.voice)
+  return a.mode === b.mode && a.token === b.token && a.bridge.fleet === b.bridge.fleet && a.bridge.conversation === b.bridge.conversation && a.selected === b.selected && a.immersive === b.immersive && a.latest === b.latest && a.alarms.join('\n') === b.alarms.join('\n') && sameVoice(a.voice, b.voice)
 }
 
 export function Instrument(p: InstrumentProps) {
@@ -299,28 +301,56 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   const items = useTiles(fleet?.sessions)
   const dispatcher = fleet?.sessions.find(x => x.kind === 'dispatcher') ?? null
   const sel = p.selected
-  const demoItem = sel && isDemoId(sel) ? items.find(it => it.kind === 'demo' && it.id === sel) : undefined
-  const selSession = sel && !isDemoId(sel) ? (fleet?.sessions.find(x => x.id === sel) ?? null) : null
+  const selSession = sel ? (fleet?.sessions.find(x => x.id === sel) ?? null) : null
   const tileSlots = useMemo(() => new Map(items.filter(it => it.kind === 'session').map(it => [itemId(it), it.slot])), [items])
   const hasMore = items.some(it => it.kind === 'more')
-  const rawTarget: Target = demoItem?.kind === 'demo' ? { kind: 'demo', id: demoItem.id, callsign: demoItem.callsign } : selSession ? { kind: 'session', session: selSession } : { kind: 'dispatcher', session: dispatcher }
+  const rawTarget: Target = selSession ? { kind: 'session', session: selSession } : { kind: 'dispatcher', session: dispatcher }
   // The Stream re-renders only when what it shows of the target changes, not on every fleet read.
-  const ts = rawTarget.kind === 'demo' ? null : rawTarget.session
-  const target = useKeyed(`${rawTarget.kind}|${rawTarget.kind === 'demo' ? rawTarget.id : (ts?.id ?? '')}|${ts?.callsign ?? ''}|${ts?.state ?? ''}|${ts?.lastLine ?? ''}|${ts?.messages.map(m => m.text).join('\u0001') ?? ''}`, rawTarget)
+  const ts = rawTarget.session
+  const target = useKeyed(`${rawTarget.kind}|${ts?.id ?? ''}|${ts?.callsign ?? ''}|${ts?.state ?? ''}|${ts?.lastLine ?? ''}|${ts?.messages.map(m => m.text).join('\u0001') ?? ''}`, rawTarget)
   const data = useTranscript(p.token, target)
+
+  // ------------------------------------------------------------ a picked sub-agent
+  // Shown in the Stream, read-only. The talk target stays its parent: the
+  // session it belongs to is selected with it (the dispatcher: no selection).
+  const [agentSel, setAgentSel] = useState<{ sessionId: string; agentId: string } | null>(null)
+  const agentOwner = agentSel ? (fleet?.sessions.find(x => x.id === agentSel.sessionId) ?? null) : null
+  const rawAgent = agentSel ? (agentOwner?.agents?.find(a => a.id === agentSel.agentId) ?? null) : null
+  const agentShown: AgentInfo | null = useKeyed(JSON.stringify(rawAgent), rawAgent)
+  const agentOwnerName = agentOwner ? (agentOwner.kind === 'dispatcher' ? 'DISPATCHER' : agentOwner.callsign.toUpperCase()) : null
+  // Dropped when the agent leaves the fleet, or the selection then moves off its parent. Only a change of
+  // selection counts: the parent's selection arrives a render later (the 2D page's state, another renderer).
+  const lastSel = useRef(sel)
+  useEffect(() => {
+    const moved = lastSel.current !== sel
+    lastSel.current = sel
+    if (!agentSel) return
+    if (!rawAgent || !agentOwner) return setAgentSel(null)
+    if (moved && sel !== (agentOwner.kind === 'dispatcher' ? null : agentOwner.id)) setAgentSel(null)
+  }, [agentSel, agentOwner, rawAgent, sel])
+  const pickAgent = useStable((sessionId: string, agentId: string | null) => {
+    const owner = fleet?.sessions.find(x => x.id === sessionId) ?? null
+    log('agent-pick', { sessionId, agentId, again: agentSel?.agentId === agentId })
+    // The "+N" box, or the open agent picked again: back to the parent's own stream.
+    const next = agentId && agentSel?.agentId !== agentId ? { sessionId, agentId } : null
+    setAgentSel(next)
+    select(owner?.kind === 'dispatcher' ? null : sessionId)
+  })
   const fleetIds = useMemo(() => new Set((fleet?.sessions ?? []).map(x => x.id)), [fleet])
-  const targetId = target.kind === 'demo' ? null : (target.session?.id ?? null)
-  const irisName = target.kind === 'dispatcher' ? 'DISPATCHER' : target.kind === 'demo' ? target.callsign : target.session.callsign.toUpperCase()
-  const irisSub = target.kind === 'demo' ? 'DEMO · NOT SENDABLE' : target.kind === 'dispatcher' ? (dispatcher ? STATE_WORDS[dispatcher.state] : 'NOT IN FLEET') : STATE_WORDS[target.session.state]
+  const targetId = target.session?.id ?? null
+  // With a character on, the dispatcher's iris reads "TALK TO <NAME>": he talks to the character, the dispatcher does the work.
+  const character = voice.character
+  const irisName = target.kind === 'dispatcher' ? (character ? character.name.toUpperCase() : 'DISPATCHER') : target.session.callsign.toUpperCase()
+  const irisSub = target.kind === 'dispatcher' ? (dispatcher ? STATE_WORDS[dispatcher.state] : 'NOT IN FLEET') : STATE_WORDS[target.session.state]
   // A character's accent replaces cyan where the scene speaks for the bridge itself: the Core's rings and the dispatcher's iris.
   const accent = voice.character?.accent ?? C.cyan
-  const irisColour = target.kind === 'demo' ? C.amber : target.kind === 'dispatcher' ? accent : stateColour((target.session as Session).state)
+  const irisColour = target.kind === 'dispatcher' ? accent : stateColour(target.session.state)
 
-  // A selection whose session left the fleet, or a demo tile that is no longer drawn, falls back to the dispatcher.
+  // A selection whose session left the fleet falls back to the dispatcher.
   useEffect(() => {
     if (!fleet || !sel) return
-    if (isDemoId(sel) ? !demoItem : !fleetIds.has(sel)) select(null)
-  }, [fleet, fleetIds, sel, demoItem, select])
+    if (!fleetIds.has(sel)) select(null)
+  }, [fleet, fleetIds, sel, select])
   useEffect(() => log('target', { kind: target.kind, id: p.selected }), [target.kind, p.selected])
 
   // ------------------------------------------------------------ cards
@@ -341,9 +371,11 @@ function Scene(p: GateProps & { session: XRSession | null }) {
       if (next) select(next.id)
       return
     }
+    setAgentSel(null)
     select(sel === id ? null : id)
   })
   const pickRef = useLatest(pickTile)
+  const pickAgentRef = useLatest(pickAgent)
 
   // ------------------------------------------------------------ sound
   useEffect(() => {
@@ -382,7 +414,10 @@ function Scene(p: GateProps & { session: XRSession | null }) {
     log('hold-end', { by: h.by, ms: Math.round(ms) })
     if (ms < TAP_MS) {
       void voiceRef.current.end('tap')
-      if (h.by === 'iris') select(null)
+      if (h.by === 'iris') {
+        setAgentSel(null)
+        select(null)
+      }
     } else void voiceRef.current.end('release')
   })
   const irisHandlers = useLatest({ onDown: () => startHold('iris'), onUp: () => endHold('iris') })
@@ -430,7 +465,7 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   const quat = useMemo(() => new Quaternion(), [])
   const eul = useMemo(() => new Euler(0, 0, 0, 'YXZ'), [])
   // What the scene holds, for the frame log: read in the frame loop without re-rendering.
-  const counts = useLatest({ tiles: items.filter(it => it.kind === 'session').length, demoTiles: items.filter(it => it.kind === 'demo').length, hiddenSessions: items.find(it => it.kind === 'more')?.kind === 'more' ? (items.find(it => it.kind === 'more') as { hidden: Session[] }).hidden.length : 0, rail: fleet?.needs.length ?? 0, replyCards: replies.shown.length, replyQueued: replies.waiting.length, selected: target.kind })
+  const counts = useLatest({ tiles: items.filter(it => it.kind === 'session').length, hiddenSessions: items.find(it => it.kind === 'more')?.kind === 'more' ? (items.find(it => it.kind === 'more') as { hidden: Session[] }).hidden.length : 0, rail: fleet?.needs.length ?? 0, replyCards: replies.shown.length, replyQueued: replies.waiting.length, selected: target.kind })
 
   // Draw calls per frame, all render passes counted (the scene, both eyes, and a layer's own render): three's
   // counter is reset here, first thing each frame, instead of at the start of every render() call.
@@ -557,7 +592,13 @@ function Scene(p: GateProps & { session: XRSession | null }) {
         <group name="top-arc">
           <TopArc usage={fleet?.usage} />
         </group>
-        <group name="stream">{useLayer ? <StreamLayer y={CORE_Y} target={target} data={data} plate={s.plate} /> : <StreamMesh y={CORE_Y} target={target} data={data} plate={s.plate} />}</group>
+        <group name="stream">{useLayer ? <StreamLayer y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} /> : <StreamMesh y={CORE_Y} target={target} data={data} plate={s.plate} character={character} conversation={bridge.conversation} agent={agentShown} agentOwner={agentOwnerName} />}</group>
+        <group name="dispatcher-agents">
+          <DispatcherStrip session={dispatcher} selectedAgent={agentSel?.agentId ?? null} plate={s.plate} onPick={pickAgentRef} />
+        </group>
+        <group name="characters">
+          <CharacterButtons voice={voice} />
+        </group>
         <group name="voice-arc">
           <VoiceArc voice={voice} level={level} />
         </group>
@@ -574,7 +615,7 @@ function Scene(p: GateProps & { session: XRSession | null }) {
           <Alarm lines={alarms} above={!!fleet?.needs.length} />
         </group>
         <group name="tiles">
-          <Tiles items={items} selected={sel} pulse={pulse} lit={lit} tileRefs={tileRefs} onPick={id => pickRef.current(id)} />
+          <Tiles items={items} selected={sel} selectedAgent={agentSel?.agentId ?? null} pulse={pulse} lit={lit} tileRefs={tileRefs} onPick={id => pickRef.current(id)} onPickAgent={pickAgent} />
           <Tether slot={selectedSlot} />
         </group>
         <group name="rail">

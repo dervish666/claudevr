@@ -57,6 +57,16 @@ test('limits: an old reading is kept but marked stale, with its age', () => {
   assert.match(r.limits.note ?? '', /last reading 20 min ago/)
 })
 
+test('limits: the windows share the age of the oldest one shown, so a fresh 5-hour reading cannot hide a stale weekly one', () => {
+  const at = (measuredAt: number, kind: string, percentUsed: number, resetsAt: number) => ({ measuredAt, rateLimits: [{ kind, percentUsed, resetsAt: iso(resetsAt) }] })
+  const old = NOW - LIMITS_STALE_MS - 10 * 60_000
+  const r = readOffice({ a: entry(at(NOW - 60_000, 'five_hour', 40, NOW + 80 * 60_000)), b: entry(at(old, 'seven_day', 70, NOW + 6 * 86_400_000)) }, NOW)
+  assert.deepEqual(r.limits.value?.map(w => [w.kind, w.usedPct]), [['five_hour', 40], ['seven_day', 70]])
+  assert.equal(r.limits.at, old)
+  assert.equal(r.limits.stale, true)
+  assert.match(r.limits.note ?? '', /last reading 25 min ago/)
+})
+
 test('limits unknown: no readings, a failed read, or not a snapshot are null with a reason, never 0%', () => {
   for (const raw of [{}, { a: entry(null) }, { a: entry({ measuredAt: NOW, context: {}, rateLimits: [] }) }, new Error('HTTP 503'), 'nonsense', undefined]) {
     const r = readOffice(raw, NOW)

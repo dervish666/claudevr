@@ -14,7 +14,8 @@ import type { Session } from '../../../shared/protocol.ts'
 import { age } from '../hud/useBridge.ts'
 import { second } from './clock.ts'
 import { arc, placed } from './Core.tsx'
-import { CORE_Y, DEMO_PREFIX, MORE_ID, ROW_DY, TILE_H, TILE_W, assignSlots, columnKey, planTiles, slotPose } from './layout.ts'
+import { CORE_Y, LANE_GAP, MORE_ID, ROW_DY, SUB_GAP, SUB_MORE_H, SUB_W, TILE_H, TILE_W, assignSlots, columnKey, moreFitsBelow, planTiles, slotPose } from './layout.ts'
+import { LaneBoxes, LaneLines, laneOf, laneShape, type LaneView } from './SubAgents.tsx'
 import { useBatch, useLines } from './linework.tsx'
 import { RING_R, RING_Z } from './Core.tsx'
 import { arcGeometry, bracketRects, rectsGeometry } from './shapes.tsx'
@@ -26,9 +27,8 @@ import { C, DEG, FONTS, STATE_WORDS, levelColour, stateColour, rgba } from './th
 const SLOTS_KEY = 'claudevr.instrument.slots'
 const MM = 0.001
 
-export type TileItem = { slot: number; kind: 'session'; session: Session } | { slot: number; kind: 'demo'; id: string; callsign: string } | { slot: number; kind: 'more'; id: string; hidden: Session[] }
+export type TileItem = { slot: number; kind: 'session'; session: Session } | { slot: number; kind: 'more'; id: string; hidden: Session[] }
 
-export const isDemoId = (id: string | null) => !!id && id.startsWith(DEMO_PREFIX)
 export const itemId = (it: TileItem) => (it.kind === 'session' ? it.session.id : it.id)
 export { slotPose }
 
@@ -64,8 +64,7 @@ export function useTiles(sessions: Session[] | undefined): TileItem[] {
     const byId = new Map(agents.map(a => [a.id, a]))
     return planTiles(slots, agents).tiles.map((t): TileItem => {
       if (t.kind === 'session') return { slot: t.slot, kind: 'session', session: byId.get(t.id)! }
-      if (t.kind === 'more') return { slot: t.slot, kind: 'more', id: MORE_ID, hidden: t.hidden.map(id => byId.get(id)!) }
-      return { slot: t.slot, kind: 'demo', id: t.id, callsign: `DEMO ${t.n}` }
+      return { slot: t.slot, kind: 'more', id: MORE_ID, hidden: t.hidden.map(id => byId.get(id)!) }
     })
   }, [slots, agents])
 }
@@ -100,7 +99,6 @@ function subjectOf(title: string, callsign: string): string {
 
 function viewOf(it: TileItem, selected: boolean): View {
   const base = { id: itemId(it), slot: it.slot, kind: it.kind, selected }
-  if (it.kind === 'demo') return { ...base, title: it.callsign, subject: '', stateLine: 'DEMO · NOT SENDABLE', colour: C.amber, working: false, action: 'Demo tile, not a session. Never sendable.', activeAt: null, pct: null }
   if (it.kind === 'more') {
     const names = it.hidden.map(s => s.callsign).join(', ')
     const asking = it.hidden.filter(s => s.state === 'asking').length
@@ -130,7 +128,7 @@ function useAge(kind: View['kind'], at: Signal<number | null>) {
     () =>
       computed(() => {
         const t = at.value
-        return kind === 'demo' ? 'DEMO' : kind === 'more' ? 'NO TILE · SAY THEIR NAME' : t === null ? 'AGE ?' : `${age(t, second.value).toUpperCase()} AGO`
+        return kind === 'more' ? 'NO TILE · SAY THEIR NAME' : t === null ? 'AGE ?' : `${age(t, second.value).toUpperCase()} AGO`
       }),
     [kind, at],
   )
@@ -138,7 +136,7 @@ function useAge(kind: View['kind'], at: Signal<number | null>) {
 
 /** The tile's text and plate, inside its column's root. Rows sit `rowStep` px apart. */
 const TileBody = memo(
-  function TileBody({ v, at, top, onPick }: { v: View; at: Signal<number | null>; top: number; onPick: MutableRefObject<(id: string) => void> }) {
+  function TileBody({ v, at, top, left, onPick }: { v: View; at: Signal<number | null>; top: number; left: number; onPick: MutableRefObject<(id: string) => void> }) {
     countRender('tile')
     const s = useSettings()
     const ageText = useAge(v.kind, at)
@@ -147,7 +145,7 @@ const TileBody = memo(
       <Container
         positionType="absolute"
         positionTop={top}
-        positionLeft={0}
+        positionLeft={left}
         width={TILE_W * 1000}
         height={TILE_H * 1000}
         flexDirection="column"
@@ -165,7 +163,7 @@ const TileBody = memo(
             minHeight holds a smaller title's action line below the gauge, level with the full-size title's. */}
         <Container flexDirection="column" paddingRight={more ? 0 : 82} minHeight={more ? 0 : 66} flexShrink={0}>
           {/* One line: a long callsign gets a smaller size rather than a second line. */}
-          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={v.title.length <= 8 ? 38 : v.title.length <= 11 ? 31 : 26} lineHeight={1.05} color={v.kind === 'demo' ? C.amber : C.white} wordBreak="keep-all">
+          <Text fontFamily="rajdhani" fontWeight="bold" fontSize={v.title.length <= 8 ? 38 : v.title.length <= 11 ? 31 : 26} lineHeight={1.05} color={C.white} wordBreak="keep-all">
             {fit(v.title.length > 15 ? `${v.title.slice(0, 14)}…` : v.title, 'rajdhani-700')}
           </Text>
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={22} color={v.colour}>
@@ -202,7 +200,7 @@ const TileBody = memo(
       </Container>
     )
   },
-  (a, b) => a.top === b.top && a.onPick === b.onPick && a.at === b.at && sameView(a.v, b.v),
+  (a, b) => a.top === b.top && a.left === b.left && a.onPick === b.onPick && a.at === b.at && sameView(a.v, b.v),
 )
 
 /** A tile's line work: corner brackets (tinted by slot), the bottom rule, the working bar and its glow, the context gauge. */
@@ -250,19 +248,43 @@ function TileLines({ v }: { v: View }) {
 
 const MemoTileLines = memo(TileLines, (a, b) => a.v.slot === b.v.slot && a.v.colour === b.v.colour && a.v.selected === b.v.selected && a.v.working === b.v.working && a.v.pct === b.v.pct && a.v.kind === b.v.kind && a.v.id === b.v.id)
 
-/** One wing column: a uikit root at the column's middle row, holding up to three tiles. */
-function Column({ views, ats, onPick, groupRefs }: { views: View[]; ats: Map<string, Signal<number | null>>; onPick: MutableRefObject<(id: string) => void>; groupRefs: MutableRefObject<(Group | null)[]> }) {
+/** A lane's width past the tile, and the room kept above and below the rows for a "+N" box, in a column root's px. */
+const LANE_PX = (LANE_GAP + SUB_W) * 1000
+const LANE_PAD_PX = (SUB_GAP + SUB_MORE_H) * 1000
+
+/**
+ * One wing column: a uikit root at the column's middle row, holding up to
+ * three tiles and, on the outer side, each tile's sub-agent lane. With any
+ * lane the root widens outward and grows by the "+N" room top and bottom,
+ * shifted so the tiles stay exactly where they were.
+ */
+function Column({ views, lanes, ats, onPick, onPickAgent, plate, groupRefs }: { views: View[]; lanes: Map<number, LaneView>; ats: Map<string, Signal<number | null>>; onPick: MutableRefObject<(id: string) => void>; onPickAgent: MutableRefObject<(sessionId: string, agentId: string | null) => void>; plate: number; groupRefs: MutableRefObject<(Group | null)[]> }) {
   const p = slotPose(views[0]!.slot)
   const px = MM * p.scale
   const rowStep = ROW_DY[0] / px
-  const height = 2 * rowStep + TILE_H * 1000
+  const hasLanes = views.some(v => lanes.has(v.slot))
+  const width = TILE_W * 1000 + (hasLanes ? LANE_PX : 0)
+  const pad = hasLanes ? LANE_PAD_PX : 0
+  const height = 2 * rowStep + TILE_H * 1000 + 2 * pad
+  const tileLeft = hasLanes && p.side < 0 ? LANE_PX : 0
+  const laneLeft = p.side < 0 ? 0 : (TILE_W + LANE_GAP) * 1000
+  // The root is centred on its group: move it outward by half the lane so the tile column keeps its centre.
+  const shift = hasLanes ? (p.side * LANE_PX * px) / 2 : 0
+  // A lane coming or going changes the root's children, which uikit cannot do cleanly: rebuild the root instead.
+  const shape = views.map(v => `${v.slot}:${laneShape(lanes.get(v.slot) ?? null)}`).join(',')
   return (
     <group position={[p.x, CORE_Y, p.z]} rotation-y={p.yaw}>
-      <Container pixelSize={px} fontFamilies={FONTS} width={TILE_W * 1000} height={height}>
-        {views.map(v => (
-          <TileBody key={v.id} v={v} at={ats.get(v.id)!} top={slotPose(v.slot).row * rowStep} onPick={onPick} />
-        ))}
-      </Container>
+      <group position-x={shift}>
+        <Container key={shape} pixelSize={px} fontFamilies={FONTS} width={width} height={height}>
+          {views.map(v => (
+            <TileBody key={v.id} v={v} at={ats.get(v.id)!} top={pad + slotPose(v.slot).row * rowStep} left={tileLeft} onPick={onPick} />
+          ))}
+          {views.map(v => {
+            const lane = lanes.get(v.slot)
+            return lane ? <LaneBoxes key={`lane:${v.id}`} lane={lane} tileTop={pad + slotPose(v.slot).row * rowStep} left={laneLeft} plate={plate} onPick={onPickAgent} /> : null
+          })}
+        </Container>
+      </group>
       {/* Anchors at each tile's centre, for sounds and reply cards. */}
       {views.map(v => (
         <group key={v.id} position-y={ROW_DY[slotPose(v.slot).row]} ref={g => void (groupRefs.current[v.slot] = g)} />
@@ -271,15 +293,44 @@ function Column({ views, ats, onPick, groupRefs }: { views: View[]; ats: Map<str
   )
 }
 
+/** Which sub-agents show on which tile right now, as text: a change means the lanes must be drawn again. */
+const lanesKey = (items: TileItem[], now: number, selectedAgent: string | null) =>
+  items.map(it => (it.kind === 'session' ? JSON.stringify(laneOf(it.session, now, selectedAgent, moreFitsBelow(it.slot))) : '')).join('|')
+
 // ---------------------------------------------------------------- the wings
 
 const PULSE_MS = 2200
 const PURPLE = new Color(C.purple).convertSRGBToLinear()
 const LIT = new Color('#e8fbff').convertSRGBToLinear()
 
-export function Tiles({ items, selected, pulse, lit, onPick, tileRefs }: { items: TileItem[]; selected: string | null; pulse: { slot: number; n: number } | null; lit: Set<number>; onPick: (id: string) => void; tileRefs: MutableRefObject<(Group | null)[]> }) {
+export function Tiles({ items, selected, selectedAgent, pulse, lit, onPick, onPickAgent, tileRefs }: { items: TileItem[]; selected: string | null; selectedAgent: string | null; pulse: { slot: number; n: number } | null; lit: Set<number>; onPick: (id: string) => void; onPickAgent: (sessionId: string, agentId: string | null) => void; tileRefs: MutableRefObject<(Group | null)[]> }) {
   const pick = useRef(onPick)
   pick.current = onPick
+  const pickAgent = useRef(onPickAgent)
+  pickAgent.current = onPickAgent
+  const plate = useSettings().plate
+  // A finished agent drops off two minutes after it ends, with no fleet read to say so: look every few
+  // seconds, and render again only when what the lanes show would change.
+  const now = Date.now()
+  const shownLanes = useRef('')
+  shownLanes.current = lanesKey(items, now, selectedAgent)
+  const [, setTick] = useState(0)
+  const latestItems = useRef(items)
+  latestItems.current = items
+  const latestAgent = useRef(selectedAgent)
+  latestAgent.current = selectedAgent
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (lanesKey(latestItems.current, Date.now(), latestAgent.current) !== shownLanes.current) setTick(n => n + 1)
+    }, 5000)
+    return () => clearInterval(t)
+  }, [])
+  const lanes = new Map<number, LaneView>()
+  for (const it of items) {
+    if (it.kind !== 'session') continue
+    const l = laneOf(it.session, now, selectedAgent, moreFitsBelow(it.slot))
+    if (l) lanes.set(it.slot, l)
+  }
   // Views are rebuilt each render, but each keeps its identity while nothing it shows has changed.
   const prev = useRef(new Map<string, View>())
   const views = items.map(it => {
@@ -291,6 +342,11 @@ export function Tiles({ items, selected, pulse, lit, onPick, tileRefs }: { items
   // Each tile's last-active time as a signal, set after render: only the age text follows it.
   const ats = useRef(new Map<string, Signal<number | null>>()).current
   for (const it of items) if (!ats.has(itemId(it))) ats.set(itemId(it), signal(it.kind === 'session' ? it.session.activeAt : null))
+  // A session that has left the tiles takes its signal with it, or the map keeps every id it ever saw.
+  if (ats.size > items.length) {
+    const shown = new Set(items.map(itemId))
+    for (const id of ats.keys()) if (!shown.has(id)) ats.delete(id)
+  }
   useLayoutEffect(() => {
     for (const it of items) ats.get(itemId(it))!.value = it.kind === 'session' ? it.session.activeAt : null
   })
@@ -322,10 +378,13 @@ export function Tiles({ items, selected, pulse, lit, onPick, tileRefs }: { items
   return (
     <>
       {[...columns.entries()].map(([k, vs]) => (
-        <Column key={k} views={vs} ats={ats} onPick={pick} groupRefs={tileRefs} />
+        <Column key={k} views={vs} lanes={lanes} ats={ats} onPick={pick} onPickAgent={pickAgent} plate={plate} groupRefs={tileRefs} />
       ))}
       {views.map(v => (
         <MemoTileLines key={v.id} v={v} />
+      ))}
+      {[...lanes.entries()].map(([slot, lane]) => (
+        <LaneLines key={`lane:${lane.sessionId}`} slot={slot} lane={lane} />
       ))}
     </>
   )

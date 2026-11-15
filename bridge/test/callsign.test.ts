@@ -121,4 +121,14 @@ test('a second session in the same project is named from its own title before it
   // Never a command word, never the task id.
   assert.equal(titleWord('T-9 read the status page', 'Claude'), 'Page')
   assert.equal(titleWord('T-422', 'Claude'), null)
+  assert.equal(titleWord('T-423 ha: voice errors', 'Claude'), 'HA', 'two letters are initials')
+  assert.equal(titleWord('gt: management session', 'Claude'), 'GT')
+})
+
+test('a second session under a project override is named from its title, and only the first answers to the heard-as names', () => {
+  const overrides = [{ match: 'ClaudeVR', callsign: 'Claude', heardAs: ['Jose'] }]
+  const c = assignCallsigns([s('main', 'ClaudeVR', 1, 'Voice-Controlled Agent Session Hub'), s('audit', 'ClaudeVR', 2, 'Codex codebase audit of ClaudeVR'), s('bare', 'ClaudeVR', 3)], overrides)
+  assert.equal(c.get('main'), 'Claude')
+  assert.equal(c.get('audit'), 'Codex')
+  assert.equal(c.get('bare'), 'Claude Three', 'no title to use, so it is numbered')
 })

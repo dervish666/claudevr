@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>ClaudeVR pairing</title>
+    <link rel="icon" href="/icon.svg" />
+    <!-- Served by the bridge to this machine only, never to the headset. Inline style is allowed by the page's CSP; script is not. -->
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07090c;
+        --panel: #10151b;
+        --panel-2: #161d25;
+        --line: #24303c;
+        --text: #e8eef4;
+        --muted: #9fb0bf;
+        --accent: #38bdf8;
+        --ok: #4ade80;
+        --bad: #f87171;
+        --warn: #fbbf24;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 18px;
+        line-height: 1.4;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--text); }
+      body { padding: 32px 16px 64px; }
+      main { max-width: 860px; margin: 0 auto; display: grid; gap: 28px; }
+      h1 { font-size: 1.9rem; margin: 0; }
+      h2 { font-size: 0.95rem; margin: 0 0 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+      p { margin: 0; }
+      .muted { color: var(--muted); }
+      button, input { font: inherit; color: inherit; }
+      .entry { display: grid; gap: 12px; padding: 24px; background: var(--panel); border: 2px solid var(--line); border-radius: 18px; }
+      .entry p { color: var(--muted); }
+      form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+      #code {
+        min-height: 72px; padding: 8px 20px; border-radius: 12px; border: 2px solid var(--line); background: var(--panel-2);
+        font-family: ui-monospace, Menlo, monospace; font-size: 2.2rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; width: 100%;
+      }
+      #code:focus { border-color: var(--accent); outline: none; }
+      .primary { min-height: 72px; padding: 0 32px; border-radius: 12px; border: 2px solid var(--accent); background: #0c2a3a; font-weight: 700; font-size: 1.2rem; cursor: pointer; }
+      .primary:disabled { opacity: 0.6; cursor: default; }
+      :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+      .msg { min-height: 1.4em; font-weight: 600; }
+      .msg.good { color: var(--ok); font-size: 1.25rem; }
+      .msg.bad { color: var(--bad); }
+      .banner { padding: 12px 16px; border-radius: 12px; background: #3b0d0d; border: 2px solid var(--bad); color: #ffe1e1; font-weight: 600; }
+      .note { padding: 12px 16px; border-radius: 12px; background: #2a2208; border: 2px solid var(--warn); color: #ffeeba; }
+      ul.waiting { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+      ul.waiting li { padding: 10px 14px; background: var(--panel); border-radius: 10px; border-left: 4px solid var(--accent); display: flex; justify-content: space-between; gap: 12px; }
+      table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 12px; overflow: hidden; }
+      th, td { text-align: left; padding: 10px 14px; border-top: 1px solid var(--line); vertical-align: middle; }
+      thead th { border-top: none; color: var(--muted); font-weight: 600; font-size: 0.85rem; letter-spacing: 0.04em; text-transform: uppercase; }
+      td.when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      td.act { text-align: right; width: 1%; white-space: nowrap; }
+      tr.fresh td { background: #0e2418; }
+      .revoke { min-height: 40px; padding: 0 16px; border-radius: 10px; border: 2px solid var(--line); background: var(--panel-2); cursor: pointer; }
+      .revoke.armed { border-color: var(--bad); background: #3b0d0d; color: #ffe1e1; font-weight: 700; }
+      .revoke:disabled { opacity: 0.6; cursor: default; }
+      .legacy { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 14px; background: var(--panel); border-radius: 12px; }
+      @media (max-width: 640px) {
+        form { grid-template-columns: 1fr; }
+        thead { display: none; }
+        td.when.seen { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pair a device</h1>
+      <section class="entry" aria-labelledby="entry-h">
+        <h2 id="entry-h">Code from the device</h2>
+        <p>Open the HUD on the headset. It shows a code; type it here.</p>
+        <form id="approve" autocomplete="off">
+          <input id="code" aria-label="Pairing code" placeholder="ACD-347" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus />
+          <button class="primary" type="submit" id="go">Approve</button>
+        </form>
+        <p id="result" class="msg" role="status" aria-live="polite"></p>
+      </section>
+
+      <p id="error" class="banner" role="alert" hidden></p>
+      <p id="autopair" class="note" hidden>autoPair is on, so the bridge hands the legacy token to any address on allowIps without a code. Turn it off in the bridge config to use pairing codes only.</p>
+
+      <section id="waiting-section" hidden aria-labelledby="waiting-h">
+        <h2 id="waiting-h">Waiting for a code</h2>
+        <ul id="waiting" class="waiting"></ul>
+      </section>
+
+      <section aria-labelledby="devices-h">
+        <h2 id="devices-h">Paired devices</h2>
+        <table id="devices" hidden>
+          <thead>
+            <tr><th scope="col">Device</th><th scope="col">Address at pairing</th><th scope="col">Paired</th><th scope="col">Last seen</th><th scope="col"><span hidden>Revoke</span></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="no-devices" class="muted" hidden>No devices paired with a code yet.</p>
+      </section>
+
+      <section aria-labelledby="legacy-h">
+        <h2 id="legacy-h">Legacy token</h2>
+        <div class="legacy" id="legacy"><span class="muted">Loading…</span></div>
+      </section>
+    </main>
+    <script type="module" src="/pair/pair.js"></script>
+  </body>
+</html>

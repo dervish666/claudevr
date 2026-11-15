@@ -29,7 +29,33 @@
         "tokens": 44000,
         "windowTokens": 200000,
         "at": 1794699940000
-      }
+      },
+      "agents": [
+        {
+          "id": "agent-d1",
+          "type": "Explore",
+          "description": "Find who owns the nightly build",
+          "state": "running",
+          "model": "claude-sonnet",
+          "startedAt": 1794699960000,
+          "endedAt": null,
+          "now": "Grep: owner in build notes",
+          "depth": 1,
+          "brief": "Find who owns the nightly build. Report back in a short list.",
+          "recent": [
+            {
+              "at": 1794699970000,
+              "text": "Read: build/README.md"
+            },
+            {
+              "at": 1794699980000,
+              "text": "Grep: owner in build notes"
+            }
+          ]
+        }
+      ],
+      "moreAgents": 0,
+      "moreRunning": 0
     },
     {
       "project": "harbour-rota",
@@ -59,7 +85,55 @@
         "tokens": 182000,
         "windowTokens": 200000,
         "at": 1794699940000
-      }
+      },
+      "agents": [
+        {
+          "id": "agent-h1",
+          "type": "general-purpose",
+          "description": "Rewrite the tide table parser",
+          "state": "running",
+          "model": "claude-opus",
+          "startedAt": 1794699700000,
+          "endedAt": null,
+          "now": "Bash: npm test -- tides",
+          "depth": 1,
+          "brief": "Rewrite the tide table parser. Report back in a short list.",
+          "recent": [
+            {
+              "at": 1794699800000,
+              "text": "Read: src/tides.ts"
+            },
+            {
+              "at": 1794699880000,
+              "text": "Edit: src/tides.ts"
+            },
+            {
+              "at": 1794699960000,
+              "text": "Bash: npm test -- tides"
+            }
+          ]
+        },
+        {
+          "id": "agent-h2",
+          "type": "Explore",
+          "description": "List every caller of loadBerths",
+          "state": "running",
+          "model": "claude-haiku",
+          "startedAt": 1794699910000,
+          "endedAt": null,
+          "now": "thinking 12s",
+          "depth": 1,
+          "brief": "List every caller of loadBerths. Report back in a short list.",
+          "recent": [
+            {
+              "at": 1794699940000,
+              "text": "Grep: loadBerths"
+            }
+          ]
+        }
+      ],
+      "moreAgents": 0,
+      "moreRunning": 0
     },
     {
       "project": "quill",
@@ -117,7 +191,33 @@
       "activeAt": 1794697480000,
       "startedAt": 1794688000000,
       "lastLine": "The weather card refreshes every ten minutes now and keeps the last reading when the API is down.",
-      "context": null
+      "context": null,
+      "agents": [
+        {
+          "id": "agent-g1",
+          "type": "Plan",
+          "description": "Plan the seed tray schema change",
+          "state": "done",
+          "model": "claude-sonnet",
+          "startedAt": 1794699600000,
+          "endedAt": 1794699975000,
+          "now": null,
+          "depth": 1,
+          "brief": "Plan the seed tray schema change. Report back in a short list.",
+          "recent": [
+            {
+              "at": 1794699800000,
+              "text": "Read: schema/trays.sql"
+            },
+            {
+              "at": 1794699970000,
+              "text": "Planned three steps: add the column, backfill, drop the old one."
+            }
+          ]
+        }
+      ],
+      "moreAgents": 0,
+      "moreRunning": 0
     },
     {
       "project": "GardenVR",
@@ -143,7 +243,98 @@
         "tokens": 640000,
         "windowTokens": 1000000,
         "at": 1794699940000
-      }
+      },
+      "agents": [
+        {
+          "id": "agent-v1",
+          "type": "general-purpose",
+          "description": "Port the greenhouse shader to WebGL 2",
+          "state": "running",
+          "model": "claude-sonnet",
+          "startedAt": 1794699500000,
+          "endedAt": null,
+          "now": "Edit: shaders/glass.frag",
+          "depth": 1,
+          "brief": "Port the greenhouse shader to WebGL 2. Report back in a short list.",
+          "recent": []
+        },
+        {
+          "id": "agent-v2",
+          "type": "Explore",
+          "description": "Find the texture loader",
+          "state": "running",
+          "model": "claude-haiku",
+          "startedAt": 1794699800000,
+          "endedAt": null,
+          "now": "Glob: **/textures/*.ts",
+          "depth": 1,
+          "brief": "Find the texture loader. Report back in a short list.",
+          "recent": []
+        },
+        {
+          "id": "agent-v3",
+          "type": "general-purpose",
+          "description": "Measure frame time on the trellis scene",
+          "state": "running",
+          "model": "claude-sonnet",
+          "startedAt": 1794699850000,
+          "endedAt": null,
+          "now": "Bash: npm run bench",
+          "depth": 1,
+          "brief": "Measure frame time on the trellis scene. Report back in a short list.",
+          "recent": []
+        },
+        {
+          "id": "agent-v4",
+          "type": "Explore",
+          "description": "Check which scenes use fog",
+          "state": "running",
+          "model": "claude-haiku",
+          "startedAt": 1794699920000,
+          "endedAt": null,
+          "now": "Grep: fog",
+          "depth": 1,
+          "brief": "Check which scenes use fog. Report back in a short list.",
+          "recent": []
+        },
+        {
+          "id": "agent-v5",
+          "type": "general-purpose",
+          "description": "Tidy the lighting constants",
+          "state": "done",
+          "model": "claude-sonnet",
+          "startedAt": 1794699300000,
+          "endedAt": 1794699950000,
+          "now": null,
+          "depth": 1,
+          "brief": "Tidy the lighting constants. Report back in a short list.",
+          "recent": []
+        },
+        {
+          "id": "agent-v6",
+          "type": "Plan",
+          "description": "Plan the hand-tracking pass",
+          "state": "failed",
+          "model": "claude-sonnet",
+          "startedAt": 1794699100000,
+          "endedAt": 1794699930000,
+          "now": null,
+          "depth": 1,
+          "brief": "Plan the hand-tracking pass. Report back in a short list.",
+          "recent": [
+            {
+              "at": 1794699925000,
+              "text": "Bash: npm run lint"
+            },
+            {
+              "at": 1794699930000,
+              "text": "The lint step failed twice."
+            }
+          ]
+        }
+      ],
+      "moreAgents": 3,
+      "moreRunning": 1
     },
     {
       "project": "kettle",

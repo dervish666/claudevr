@@ -4,8 +4,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DashwebAdapter, type CommandRunner, type Fetcher } from '../src/backend/dashweb/adapter.ts'
+import { DashwebAdapter, t3RequestId, type CommandRunner, type Fetcher, type T3Sender } from '../src/backend/dashweb/adapter.ts'
 import { SendRefused, UnsupportedError } from '../src/backend/types.ts'
+import { T3McpError } from '../src/backend/t3mcp.ts'
 import type { StreamFetcher } from '../src/backend/dashweb/stream.ts'
 
 const FIX = join(import.meta.dirname, '..', '..', 'fixtures')
@@ -102,6 +103,51 @@ test('send refuses unknown sessions, empty and oversized text, before running an
   await assert.rejects(a.send(BUSY, '   '), SendRefused)
   await assert.rejects(a.send(BUSY, 'x'.repeat(4001)), SendRefused)
   assert.equal(r.calls.length, 0)
+})
+
+test('send: refused while the latest fleet read failed, or once the last good read is over a minute old', async () => {
+  const r = recorder()
+  let t = 1_000_000
+  const routes: Record<string, unknown> = { '/api/board': BOARD, '/api/t3': T3 }
+  const a = new DashwebAdapter(cfg, { fetch: fakeFetch(routes).fetch, run: r.run, log: quiet, now: () => t })
+  await a.list()
+  await a.send(BUSY, 'one')
+  routes['/api/board'] = new Error('ECONNREFUSED')
+  await assert.rejects(a.list())
+  await assert.rejects(a.send(BUSY, 'two'), (e: Error) => e instanceof SendRefused && e.status === 409 && /cannot confirm the session is still there: the last fleet read failed/.test(e.message))
+  routes['/api/board'] = BOARD
+  await a.list()
+  await a.send(BUSY, 'three')
+  t += 61_000
+  await assert.rejects(a.send(BUSY, 'four'), /cannot confirm the session is still there: the last good fleet read is 61 s old/)
+  assert.deepEqual(r.calls.map(c => c.input), ['one', 'three'], 'nothing ran for the refused sends')
+})
+
+test('send: the HUD request id reaches T3 as one stable UUID; without one, each send gets a fresh id', async () => {
+  const ids: string[] = []
+  const t3mcp: T3Sender = { linkState: () => 'ok', send: async (_thread, _text, id) => (ids.push(id), { delivery: 'started', runId: '' }) }
+  const a = new DashwebAdapter(cfg, { fetch: fakeFetch({ '/api/board': BOARD, '/api/t3': T3 }).fetch, run: recorder().run, log: quiet, t3mcp })
+  await a.list()
+  await a.send(BUSY, 'x', 'card-0123456789')
+  await a.send(BUSY, 'x', 'card-0123456789')
+  await a.send(BUSY, 'x', 'card-other-0001')
+  await a.send(BUSY, 'x')
+  await a.send(BUSY, 'x')
+  assert.equal(ids[0], ids[1], 'a retry of one card is the same request to T3')
+  assert.notEqual(ids[0], ids[2])
+  assert.notEqual(ids[3], ids[4])
+  for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  assert.equal(t3RequestId('card-0123456789'), ids[0])
+  assert.match(ids[0]!, /^.{14}5/, 'version 5 layout')
+})
+
+test('send: T3 refusing the send is a refusal (nothing went out), not an unknown outcome', async () => {
+  const t3mcp: T3Sender = { linkState: () => 'ok', send: async () => Promise.reject(new T3McpError('tool', 'T3 refused the send (invalid_request): nope')) }
+  const r = recorder()
+  const a = new DashwebAdapter(cfg, { fetch: fakeFetch({ '/api/board': BOARD, '/api/t3': T3 }).fetch, run: r.run, log: quiet, t3mcp })
+  await a.list()
+  await assert.rejects(a.send(BUSY, 'x'), (e: Error) => e instanceof SendRefused && e.status === 502 && /nope/.test(e.message))
+  assert.equal(r.calls.length, 0, 'and the CLI is not tried')
 })
 
 test('transcript runs `t3 thread show --json` and maps roles, in full, cutting only at the cap', async () => {

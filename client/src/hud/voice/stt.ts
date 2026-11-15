@@ -8,8 +8,8 @@ import type { Interpretation, SpokenLine, VoiceContext, VoiceReply } from '../..
 
 export interface ClientSttProvider {
   readonly name: string
-  /** `focusId`: the session open in the reader, which unaddressed speech goes to. */
-  transcribe(clip: Blob, context: VoiceContext, focusId: string | null): Promise<VoiceReply>
+  /** `focusId`: the session open in the reader, which unaddressed speech goes to. `signal` abandons the upload (Cancel). */
+  transcribe(clip: Blob, context: VoiceContext, focusId: string | null, signal?: AbortSignal): Promise<VoiceReply>
 }
 
 const failed = (error: string): VoiceReply => ({ transcript: { ok: false, reason: 'failed', error, provider: null, audioMs: null, peakDb: null }, interpretation: null })
@@ -17,11 +17,15 @@ const failed = (error: string): VoiceReply => ({ transcript: { ok: false, reason
 export function bridgeStt(token: string): ClientSttProvider {
   return {
     name: 'bridge',
-    async transcribe(clip, context, focusId) {
+    async transcribe(clip, context, focusId, signal) {
       let r: Response
       try {
-        r = await fetch(`/api/transcribe?context=${context}${focusId ? `&focus=${encodeURIComponent(focusId)}` : ''}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': clip.type || 'application/octet-stream' }, body: clip, cache: 'no-store' })
+        r = await fetch(`/api/transcribe?context=${context}${focusId ? `&focus=${encodeURIComponent(focusId)}` : ''}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': clip.type || 'application/octet-stream' }, body: clip, cache: 'no-store', signal })
       } catch (err) {
+        if (signal?.aborted) {
+          console.info('voice: upload abandoned by Cancel')
+          return failed('cancelled')
+        }
         console.error('voice: upload failed:', err)
         return failed(`bridge unreachable: ${err instanceof Error ? err.message : String(err)}`)
       }

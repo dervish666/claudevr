@@ -10,10 +10,11 @@
 
 import { randomBytes } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import type { CharacterInfo, Fleet, Interpretation, PendingLine, PersonaStatus, SpokenLine } from '../../../shared/protocol.ts'
+import type { CharacterInfo, Conversation, ConversationEntry, Fleet, Interpretation, PendingLine, PersonaStatus, Session, SpokenLine, Turn } from '../../../shared/protocol.ts'
+import { turnKey } from '../../../shared/conversation.ts'
 import type { TtsProvider } from '../voice/tts.ts'
 import type { FrontMan } from './frontman.ts'
-import { announcementFacts, askPrompt, CLASSIFIER_PROMPT, classifyPrompt, fleetEvents, linePrompt, parseClassified, speakableLine, systemPrompt, validateClassified, whatWasDone, type Character, type FleetEvent, type LineFacts } from './prompt.ts'
+import { announcementFacts, askPrompt, CLASSIFIER_PROMPT, classifyPrompt, fleetEvents, linePrompt, parseClassified, plainRelay, relayPrompt, speakableLine, systemPrompt, validateClassified, whatWasDone, type Character, type FleetEvent, type LineFacts, type Relay } from './prompt.ts'
 
 export interface Audience {
   /** Some HUD is connected and not muted. */
@@ -21,6 +22,13 @@ export interface Audience {
   /** Someone is holding to talk right now. */
   holding: boolean
 }
+
+/**
+ * Reads a session's last turns, oldest first, for a relay. The server sets
+ * it, since only the server may touch the backend; null means the session
+ * has no full turns to give, and the relay reads the fleet's clips instead.
+ */
+export type TurnReader = (sessionId: string) => Promise<Turn[] | null>
 
 export interface PersonaOptions {
   characters: Character[]
@@ -45,7 +53,40 @@ export interface PersonaOptions {
   /** No unprompted line until this long after he last spoke. */
   quietAfterVoiceMs?: number
   audience?: () => Audience
+  /** Full turns for relays; without it a relay reads the fleet's clips. */
+  readTurns?: TurnReader
+  /** How long, after he sends the dispatcher something, its answer is waited for. */
+  relayWaitMs?: number
+  /** A relay that could not be spoken (he held to talk, nobody listening) for this long after the answer came is dropped. */
+  relayStaleMs?: number
   log?: (...a: unknown[]) => void
+}
+
+/** Conversation entries kept, and the longest text kept in one. */
+const CONVERSATION_MAX = 30
+const ENTRY_TEXT_MAX = 800
+/** A relay check that finds no new answer yet (the transcript lags the board) is tried again on later fleet reads, this many times. */
+const RELAY_RETRIES = 5
+
+/** The newest thing a session said, as the fleet shows it, for telling whether it has said something since. */
+const lastMessageKey = (s: Session): string | null => {
+  const m = s.messages.at(-1)
+  return m ? `${m.at ?? ''}|${turnKey(m.text)}` : null
+}
+
+const clipEntry = (t: string) => (t.length > ENTRY_TEXT_MAX ? `${t.slice(0, ENTRY_TEXT_MAX - 1)}…` : t)
+
+interface Awaiting {
+  /** When he last sent it something. */
+  at: number
+  sessionId: string
+  sent: string
+  /** The fleet's newest message from it at the send, and at the last read since. */
+  baseMsg: string | null
+  lastMsg: string | null
+  /** Its newest turn of its own at the send, once read: an answer must be a different one. */
+  baseTurn: string | null
+  retries: number
 }
 
 const info = (c: Character): CharacterInfo => ({ name: c.name, confirm: c.confirm, accent: c.accent })
@@ -57,7 +98,7 @@ export function plainLine(i: Interpretation): string {
 }
 
 export class Persona {
-  private readonly o: Required<Omit<PersonaOptions, 'stateFile' | 'initial' | 'audience'>> & Pick<PersonaOptions, 'stateFile' | 'audience'>
+  private readonly o: Required<Omit<PersonaOptions, 'stateFile' | 'initial' | 'audience' | 'readTurns'>> & Pick<PersonaOptions, 'stateFile' | 'audience' | 'readTurns'>
   private cur: Character | null = null
   private readonly lines = new Map<string, { at: number; line: Promise<SpokenLine> }>()
   private readonly listeners = new Set<(s: PersonaStatus) => void>()
@@ -67,9 +108,17 @@ export class Persona {
   private lastSpokeAt = 0
   private lastVoiceAt = 0
   private readonly unsub: (() => void)[] = []
+  // The conversation lives in memory only: a bridge restart loses it, and
+  // that is fine, since it only feeds the prompts and the dispatcher panel.
+  private convo: ConversationEntry[] = []
+  private readonly convoListeners = new Set<(c: Conversation) => void>()
+  private awaiting: Awaiting | null = null
+  private checking = false
+  private nextCheck: { d: Session; kind: Relay['kind'] } | null = null
+  private closed = false
 
   constructor(o: PersonaOptions) {
-    this.o = { warmUp: false, lineTimeoutMs: 4_000, classifyTimeoutMs: 3_000, announceGapMs: 20_000, coalesceMs: 1_500, quietAfterVoiceMs: 6_000, log: (...a) => console.log('[persona]', ...a), ...o }
+    this.o = { warmUp: false, lineTimeoutMs: 4_000, classifyTimeoutMs: 3_000, announceGapMs: 20_000, coalesceMs: 1_500, quietAfterVoiceMs: 6_000, relayWaitMs: 600_000, relayStaleMs: 60_000, log: (...a) => console.log('[persona]', ...a), ...o }
     const notify = () => this.notify()
     this.unsub.push(o.frontMan.onStatus(notify))
     if (o.initial) {
@@ -102,6 +151,36 @@ export class Persona {
     return () => this.announceListeners.delete(l)
   }
 
+  // ------------------------------------------------------------ conversation
+
+  /** What he said to the dispatcher and to the character, what the dispatcher answered, and what the character said. */
+  conversation(): Conversation {
+    return { character: this.cur?.name ?? null, entries: this.convo.slice() }
+  }
+
+  onConversation(l: (c: Conversation) => void): () => void {
+    this.convoListeners.add(l)
+    return () => this.convoListeners.delete(l)
+  }
+
+  private record(e: Omit<ConversationEntry, 'id' | 'at'>): void {
+    this.convo.push({ ...e, id: randomBytes(6).toString('hex'), at: Date.now(), text: clipEntry(e.text) })
+    if (this.convo.length > CONVERSATION_MAX) this.convo.splice(0, this.convo.length - CONVERSATION_MAX)
+    this.notifyConversation()
+  }
+
+  private clearConversation(): void {
+    this.awaiting = null
+    this.nextCheck = null
+    this.convo = []
+    this.notifyConversation()
+  }
+
+  private notifyConversation(): void {
+    const c = this.conversation()
+    for (const l of this.convoListeners) l(c)
+  }
+
   private notify(): void {
     const s = this.status()
     for (const l of this.listeners) l(s)
@@ -114,6 +193,7 @@ export class Persona {
       this.o.frontMan.configure(null)
       this.o.classifier.configure(null)
       this.pending = []
+      this.clearConversation()
       this.remember('')
       this.o.log('operator mode')
       this.notify()
@@ -133,6 +213,8 @@ export class Persona {
         this.o.log(`${c.name}: could not change to the ${c.voice} voice: ${(err as Error).message}`)
       }
     } else this.o.log(`${c.name}: speaks with ${tts.name}'s own voice (the ${c.voice} voice needs the fish provider)`)
+    // A new character starts a new conversation: the old one's words are not its own.
+    if (this.cur !== c) this.clearConversation()
     this.cur = c
     this.o.frontMan.configure(systemPrompt(c))
     this.o.classifier.configure(CLASSIFIER_PROMPT)
@@ -163,6 +245,11 @@ export class Persona {
     this.o.audience = a
   }
 
+  /** Where relays read full turns from; the server sets it. */
+  setTurnReader(r: TurnReader): void {
+    this.o.readTurns = r
+  }
+
   /** He just spoke: hold unprompted lines back for a while. */
   heardVoice(): void {
     this.lastVoiceAt = Date.now()
@@ -183,10 +270,17 @@ export class Persona {
     const id = randomBytes(8).toString('hex')
     this.prune()
     // An answer to a question is longer than a remark, and worth a longer wait.
-    const line =
-      i.kind === 'ask'
-        ? this.write(id, c, () => askPrompt(i.question, fleet(), Date.now()), plainLine(i), { timeoutMs: this.o.lineTimeoutMs + 3_000, max: 420, sentences: 3 })
-        : this.write(id, c, () => linePrompt(facts, fleet(), Date.now()), plainLine(i), { timeoutMs: this.o.lineTimeoutMs, max: 280, sentences: 2 })
+    let line: Promise<SpokenLine>
+    if (i.kind === 'ask') {
+      // The conversation so far, before this question joins it, so the prompt does not carry the question twice.
+      const history = this.convo.slice()
+      if (i.question.trim()) this.record({ who: 'user', to: 'character', text: i.question })
+      line = this.write(id, c, () => askPrompt(i.question, fleet(), Date.now(), history), plainLine(i), { timeoutMs: this.o.lineTimeoutMs + 3_000, max: 420, sentences: 3 })
+      // Turns carry no time, so the HUD places an answer by where it first saw it (after: null).
+      void line.then(l => {
+        if (this.cur === c) this.record({ who: 'character', text: l.text, source: l.source, after: null })
+      })
+    } else line = this.write(id, c, () => linePrompt(facts, fleet(), Date.now()), plainLine(i), { timeoutMs: this.o.lineTimeoutMs, max: 280, sentences: 2 })
     this.lines.set(id, { at: Date.now(), line })
     return { id, character: c.name }
   }
@@ -261,7 +355,18 @@ export class Persona {
    */
   fleetChanged(prev: Fleet | null, next: Fleet): void {
     if (!this.cur) return
-    const events = fleetEvents(prev, next)
+    let events = fleetEvents(prev, next)
+    if (this.awaiting && Date.now() - this.awaiting.at > this.o.relayWaitMs) {
+      this.o.log(`relay: no answer from the dispatcher in ${Math.round(this.o.relayWaitMs / 60_000)} min; stopped waiting`)
+      this.awaiting = null
+    }
+    const a = this.awaiting
+    if (a) {
+      // While he waits on the dispatcher, its own events belong to the relay: one event, one line.
+      const mine = events.filter(e => e.sessionId === a.sessionId)
+      events = events.filter(e => e.sessionId !== a.sessionId)
+      this.watchDispatcher(a, next, mine)
+    }
     if (!events.length) return
     for (const e of events) {
       this.pending = this.pending.filter(p => p.sessionId !== e.sessionId)
@@ -271,6 +376,146 @@ export class Persona {
   }
 
   private latestFleet: Fleet | null = null
+
+  // ------------------------------------------------------------ relays
+
+  /**
+   * The server calls this once a message he sent the dispatcher has gone
+   * (the send route answered ok). In character mode it joins the
+   * conversation, and the dispatcher's next answer is relayed in the
+   * character's voice. Returns whether a relay is now awaited.
+   */
+  noteSentToDispatcher(text: string, dispatcher: Session): boolean {
+    if (!this.cur) return false
+    this.record({ who: 'user', to: 'dispatcher', text })
+    const at = Date.now()
+    const a = this.awaiting
+    if (a && a.sessionId === dispatcher.id) {
+      a.at = at
+      a.sent = text
+      a.retries = 0
+      return true
+    }
+    const msg = lastMessageKey(dispatcher)
+    const next: Awaiting = { at, sessionId: dispatcher.id, sent: text, baseMsg: msg, lastMsg: msg, baseTurn: null, retries: 0 }
+    this.awaiting = next
+    void this.readBaseline(next)
+    return true
+  }
+
+  /** The dispatcher's newest turn of its own at the send, so a transcript that lags the board is not taken for the answer. */
+  private async readBaseline(a: Awaiting): Promise<void> {
+    const turns = await this.turnsOf(a.sessionId)
+    if (!turns || this.awaiting !== a) return
+    const own = turns.filter(t => t.role === 'session').at(-1)
+    a.baseTurn = own ? turnKey(own.text) : null
+  }
+
+  private async turnsOf(id: string): Promise<Turn[] | null> {
+    if (!this.o.readTurns) return null
+    try {
+      return await this.o.readTurns(id)
+    } catch (err) {
+      this.o.log(`relay: could not read the dispatcher's turns, using the fleet's clips: ${(err as Error).message}`)
+      return null
+    }
+  }
+
+  private watchDispatcher(a: Awaiting, next: Fleet, mine: FleetEvent[]): void {
+    const d = next.sessions.find(s => s.id === a.sessionId)
+    if (!d) return
+    const msg = lastMessageKey(d)
+    const moved = msg !== a.lastMsg
+    a.lastMsg = msg
+    const stopped = mine.find(e => e.kind === 'asking' || e.kind === 'failed')
+    if (stopped) return void this.checkRelay(d, stopped.kind as 'asking' | 'failed')
+    if (d.state === 'working' || d.state === 'thinking') return
+    if (moved || mine.length || (a.retries > 0 && a.retries <= RELAY_RETRIES)) void this.checkRelay(d, 'reply')
+  }
+
+  /** Reads the dispatcher's turns and, when it has answered, relays the answer. One check at a time; a trigger during one runs after it. */
+  private async checkRelay(d: Session, kind: Relay['kind']): Promise<void> {
+    if (this.checking) {
+      if (!this.nextCheck || kind !== 'reply') this.nextCheck = { d, kind }
+      return
+    }
+    this.checking = true
+    try {
+      const a = this.awaiting
+      if (!a) return
+      const turns = await this.turnsOf(d.id)
+      if (this.awaiting !== a || !this.cur) return
+      const found = this.answerIn(kind, d, turns, a)
+      if (!found) {
+        a.retries++
+        return
+      }
+      this.awaiting = null
+      await this.relay(found.relay, found.after, Date.now())
+    } finally {
+      this.checking = false
+      const n = this.nextCheck
+      this.nextCheck = null
+      if (n && this.awaiting) void this.checkRelay(n.d, n.kind)
+    }
+  }
+
+  /**
+   * The dispatcher's answer, or null when it has not given one yet. With full
+   * turns it is what it said after his last message, which must not be the
+   * turn it had at the send; with clips only, a newest message that is new
+   * and is not his own words coming back.
+   */
+  private answerIn(kind: Relay['kind'], d: Session, turns: Turn[] | null, a: Awaiting): { relay: Relay; after: string | null } | null {
+    let said: string | null = null
+    let after: string | null = null
+    if (turns) {
+      const lastYou = turns.map(t => t.role).lastIndexOf('you')
+      const own = turns.slice(lastYou + 1).filter(t => t.role === 'session')
+      const newest = own.at(-1)
+      if (newest && turnKey(newest.text) !== a.baseTurn) said = own.map(t => t.text).join('\n\n')
+      const last = turns.at(-1)
+      after = last ? turnKey(last.text) : null
+    } else {
+      const m = d.messages.at(-1)
+      if (m && lastMessageKey(d) !== a.baseMsg && !m.text.includes(a.sent)) said = m.text
+      after = m ? turnKey(m.text) : null
+    }
+    if (kind === 'asking') return { relay: { kind, text: d.asking?.text ?? said ?? d.lastLine }, after }
+    if (kind === 'failed') return { relay: { kind, text: said ?? d.lastLine }, after }
+    return said ? { relay: { kind, text: said }, after } : null
+  }
+
+  /**
+   * Writes and speaks the relay. It skips the speaking-up gap, since he is
+   * waiting for this answer, and keeps every other courtesy: only to a
+   * listening HUD, held while he holds to talk or has just spoken, dropped
+   * once it is `relayStaleMs` old.
+   */
+  private async relay(r: Relay, after: string | null, seenAt: number): Promise<void> {
+    const c = this.cur
+    if (!c) return
+    const history = this.convo.slice()
+    if (r.text) this.record({ who: 'dispatcher', text: r.text })
+    if (!(this.o.audience?.() ?? { listening: true }).listening) {
+      this.o.log('relay: nobody listening; the answer is on screen, nothing spoken')
+      return
+    }
+    const id = randomBytes(8).toString('hex')
+    const line = await this.write(id, c, () => relayPrompt(r, history), plainRelay(r), { timeoutMs: this.o.lineTimeoutMs + 3_000, max: 420, sentences: 3 })
+    for (;;) {
+      if (this.closed || this.cur !== c) return void this.o.log('relay: dropped, the character changed')
+      if (Date.now() - seenAt > this.o.relayStaleMs) return void this.o.log(`relay: dropped, held back for over ${Math.round(this.o.relayStaleMs / 1000)} s`)
+      const au = this.o.audience?.() ?? { listening: true, holding: false }
+      if (!au.listening) return void this.o.log('relay: dropped, nobody listening')
+      if (!au.holding && Date.now() >= this.lastVoiceAt + this.o.quietAfterVoiceMs) break
+      await new Promise(ok => setTimeout(ok, 250))
+    }
+    this.lastSpokeAt = Date.now()
+    this.record({ who: 'character', text: line.text, source: line.source, after })
+    this.o.log(`relay: ${r.kind}, ${line.source}`)
+    for (const l of this.announceListeners) l(line)
+  }
 
   private schedule(fleet: Fleet): void {
     this.latestFleet = fleet
@@ -306,6 +551,7 @@ export class Persona {
   }
 
   close(): void {
+    this.closed = true
     if (this.timer) clearTimeout(this.timer)
     for (const u of this.unsub) u()
     this.o.frontMan.close()

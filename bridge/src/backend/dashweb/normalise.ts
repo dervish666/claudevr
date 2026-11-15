@@ -6,7 +6,7 @@
 // `tasks[].session` (the live session a ledger row matched, or null) and
 // `other` (every other live session, T3-only Codex threads among them).
 
-import type { Ask, Figure, Fleet, Ledger, LedgerRow, Message, Need, NeedKind, Session, SessionState } from '../../../../shared/protocol.ts'
+import type { AgentActivity, AgentInfo, AgentState, Ask, Figure, Fleet, Ledger, LedgerRow, Message, Need, NeedKind, Session, SessionState } from '../../../../shared/protocol.ts'
 import { assignCallsigns } from '../callsign.ts'
 import { readOffice } from './usage.ts'
 
@@ -88,6 +88,100 @@ function messagesOf(view: Obj): Message[] {
   const sayText = str(say.text)
   if (sayText && !says.some(m => m.at === num(say.at))) says.push({ at: num(say.at), text: clip(sayText, MESSAGE_MAX) })
   return says.slice(-MESSAGES_KEPT)
+}
+
+// ---------------------------------------------------------------- sub-agents
+
+/** Sub-agents kept per session; the rest are only counted. */
+export const AGENTS_KEPT = 6
+const AGENT_LINE_MAX = 100
+const AGENT_BRIEF_MAX = 240
+const AGENT_RECENT_KEPT = 3
+/** A finished agent older than this keeps its line on the card but loses its brief and recent list: the HUD no longer shows it, and every fleet push carries them. */
+const AGENT_DETAIL_MS = 150_000
+const AGENT_ID_MAX = 80
+
+/**
+ * dashweb's agent `status`, from status-dash. Seen on the live board:
+ * "running" and "completed". dashweb's own pages also handle "failed",
+ * "killed", "interrupted" and "quiet" (no end seen), so those are mapped
+ * too; anything else is unknown.
+ */
+const AGENT_STATES: Record<string, AgentState> = {
+  running: 'running',
+  completed: 'done',
+  failed: 'failed',
+  killed: 'failed',
+  interrupted: 'failed',
+}
+
+/** One activity line: "Bash: npm test", or what it said. Null when there is no text. */
+function activityText(r: Obj): string | null {
+  const text = str(r.text)
+  const tool = str(r.tool)
+  if (text) return clip(tool ? `${tool}: ${text}` : text, AGENT_LINE_MAX)
+  return tool ? clip(tool, AGENT_LINE_MAX) : null
+}
+
+function agentOf(raw: unknown): AgentInfo | null {
+  if (!isObj(raw)) return null
+  const id = str(raw.id)
+  if (!id) return null
+  const status = str(raw.status)
+  const state = (status && AGENT_STATES[status]) || 'unknown'
+  const recent = arr(raw.recent)
+    .map(obj)
+    .map(r => ({ at: num(r.at), text: activityText(r) }))
+    .filter((r): r is AgentActivity => r.text !== null)
+    .slice(-AGENT_RECENT_KEPT)
+  const nowObj = obj(raw.now)
+  const nowTool = str(nowObj.tool)
+  const nowDetail = str(nowObj.detail)
+  const nowLine = nowDetail ? (nowTool ? `${nowTool}: ${nowDetail}` : nowDetail) : (str(nowObj.status) ?? nowTool)
+  const depth = num(raw.depth)
+  return {
+    id: id.slice(0, AGENT_ID_MAX),
+    type: clip(str(raw.type) ?? 'agent', 40),
+    description: clip(str(raw.description) ?? 'no description', AGENT_LINE_MAX),
+    state,
+    model: str(raw.model) ? clip(String(raw.model), 40) : null,
+    startedAt: num(raw.startedAt),
+    endedAt: num(raw.endedAt),
+    // What it is doing now; failing that, the newest thing it did.
+    now: nowLine ? clip(nowLine, AGENT_LINE_MAX) : (recent.at(-1)?.text ?? null),
+    depth: depth !== null && depth >= 1 ? Math.min(9, Math.floor(depth)) : 1,
+    brief: str(raw.brief) ? clip(String(raw.brief), AGENT_BRIEF_MAX) : null,
+    recent,
+  }
+}
+
+/** Running first (newest start first), then finished, most recently ended first. */
+export function byAgentOrder(a: AgentInfo, b: AgentInfo): number {
+  const run = (x: AgentInfo) => (x.state === 'running' ? 0 : 1)
+  if (run(a) !== run(b)) return run(a) - run(b)
+  const t = (x: AgentInfo) => (x.state === 'running' ? x.startedAt : (x.endedAt ?? x.startedAt)) ?? 0
+  return t(b) - t(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+}
+
+/** A session's (or the dispatcher's) `agents` list, trimmed, ordered and capped, with what the cap left out counted. */
+export function agentsOf(view: Obj, now: number): { agents: AgentInfo[]; moreAgents: number; moreRunning: number } {
+  const seen = new Set<string>()
+  const all: AgentInfo[] = []
+  for (const raw of arr(view.agents)) {
+    const a = agentOf(raw)
+    if (!a || seen.has(a.id)) continue
+    seen.add(a.id)
+    all.push(a)
+  }
+  all.sort(byAgentOrder)
+  const rest = all.slice(AGENTS_KEPT)
+  // dashweb caps its own list and counts the rest in `more`; those never reach us, so they count as left out too.
+  const boardMore = Math.max(0, Math.floor(num(view.more) ?? 0))
+  const kept = all.slice(0, AGENTS_KEPT).map(a => {
+    const ended = a.state === 'running' ? null : (a.endedAt ?? a.startedAt)
+    return ended !== null && now - ended > AGENT_DETAIL_MS ? { ...a, brief: null, recent: [] } : a
+  })
+  return { agents: kept, moreAgents: rest.length + boardMore, moreRunning: rest.filter(a => a.state === 'running').length }
 }
 
 export interface T3Thread {
@@ -221,6 +315,7 @@ export function normalise(boardRaw: unknown, t3Raw: unknown, now = Date.now(), e
       messages,
       canSend,
       context: office?.contexts.get(id) ?? null,
+      ...agentsOf(view, num(board.at) ?? now),
     }
   })
   const byId = new Map(sessions.map(s => [s.id, s]))

@@ -1,10 +1,10 @@
-// Starts the bridge: config, certificate, pairing token, backend, server.
+// Starts the bridge: config, certificate, paired devices, backend, server.
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, REPO_ROOT } from './config.ts'
 import { ensureCert } from './cert.ts'
-import { loadOrCreateToken } from './gate.ts'
+import { DeviceStore, notifyMac, PairingRequests } from './pairing.ts'
 import { createBridge } from './server.ts'
 import { DashwebAdapter } from './backend/dashweb/adapter.ts'
 import { FakeAdapter } from './backend/fake.ts'
@@ -19,7 +19,12 @@ const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a)
 function main(): void {
   const cfg = loadConfig(process.env, log)
   const certs = ensureCert(join(cfg.stateDir, 'certs'), log)
-  const { token, created } = loadOrCreateToken(join(cfg.stateDir, 'pairing-token'), log)
+  const legacyFile = join(cfg.stateDir, 'pairing-token')
+  const devices = new DeviceStore({ file: join(cfg.stateDir, 'devices.json'), legacyFile, log })
+  // autoPair hands out the legacy token, so it needs one. Without autoPair a
+  // new install makes none, and devices pair with a code instead.
+  if (cfg.autoPair) devices.ensureLegacy()
+  const pairing = new PairingRequests({ devices, log })
 
   let backend: SessionBackend
   if (cfg.backend === 'dashweb' && cfg.dashweb) backend = new DashwebAdapter(cfg.dashweb)
@@ -105,7 +110,9 @@ function main(): void {
 
   const bridge = createBridge({
     backend,
-    token,
+    devices,
+    pairing,
+    notify: process.platform === 'darwin' ? text => notifyMac(text, log) : undefined,
     allowIps: cfg.allowIps,
     autoPair: cfg.autoPair,
     clientDir: cfg.clientDir,
@@ -131,6 +138,8 @@ function main(): void {
   })
   bridge.server.listen(cfg.port, cfg.host, () => {
     const hosts = certs.names.filter(n => n !== 'localhost')
+    const lan = hosts.find(h => !/^127\./.test(h) && h !== '::1') ?? "<this machine's LAN address>"
+    const paired = devices.list().length
     const lines = [
       '',
       `ClaudeVR bridge on https://${cfg.host}:${cfg.port}  backend: ${backend.name}`,
@@ -143,14 +152,13 @@ function main(): void {
       '',
       ...hosts.flatMap(h => [`  HUD    https://${h}:${cfg.port}/`, `  probe  https://${h}:${cfg.port}/probe`]),
       '',
-      cfg.autoPair
-        ? '  pairing: automatic for allowed clients, nothing to type. The allow list is the only gate.'
-        : '  pairing: type the token below once per browser, or set autoPair to skip that.',
-      `  pairing token${created ? ' (new)' : ''}: ${token}`,
-      `  (kept in ${join(cfg.stateDir, 'pairing-token')}; delete that file to make a new one)`,
+      // Never the token itself. This goes to a terminal and its scrollback.
+      `  paired devices: ${paired}; legacy token: ${devices.legacyActive() ? `active (${legacyFile}); revoke it at https://localhost:${cfg.port}/pair` : 'none'}`,
+      `  To pair a device: open https://${lan}:${cfg.port} on it and enter the code it shows at https://localhost:${cfg.port}/pair`,
       '',
     ]
     console.log(lines.join('\n'))
+    if (cfg.autoPair) log('autoPair is on: any address on allowIps gets the legacy token without pairing. Turn it off to use the pairing handshake.')
   })
 
   const stop = (sig: string) => {

@@ -19,6 +19,34 @@ import type { DashwebConfig } from '../../config.ts'
 import { capabilities, Poller, SendRefused, UnsupportedError, type FleetUpdate, type SendResult, type SessionBackend } from '../types.ts'
 import { normalise } from './normalise.ts'
 import { OfficeStream, type StreamFetcher } from './stream.ts'
+import { createHash, randomUUID } from 'node:crypto'
+import { readT3Origin, T3Mcp, T3McpError, type Delivery } from '../t3mcp.ts'
+
+/** The part of T3Mcp the adapter uses, so a test can stand in for it. */
+export type T3Sender = Pick<T3Mcp, 'send' | 'linkState'>
+
+/** What the HUD shows for each way T3 took a message. */
+const DELIVERY_SAID: Record<Delivery, string> = {
+  started: 'Started.',
+  steered: 'Went straight in.',
+  queued: 'Queued behind the current turn.',
+  restarted: 'Restarted the turn with it.',
+}
+
+const FIX_LINK = 'Run npm run t3-link.'
+/** The HUD warning for a send that fell back to the CLI, by why it fell back. */
+function linkWarning(err: T3McpError): string {
+  switch (err.kind) {
+    case 'not-linked':
+      return `Not linked to T3: messages will queue. ${FIX_LINK}`
+    case 'expired':
+      return `T3 link expired: messages will queue. ${FIX_LINK}`
+    case 'denied':
+      return `T3 link cannot send to that thread, probably approved below Full access: messages will queue. ${FIX_LINK}`
+    default:
+      return `T3's MCP endpoint did not answer (${err.message.slice(0, 120)}): messages will queue.`
+  }
+}
 
 /** Runs a program with arguments and stdin; resolves stdout, rejects with stderr. */
 export type CommandRunner = (file: string, args: string[], input: string, timeoutMs: number) => Promise<string>
@@ -43,6 +71,10 @@ export interface DashwebDeps {
   streamFetch?: StreamFetcher
   run?: CommandRunner
   log?: (...a: unknown[]) => void
+  /** Sends over T3's MCP endpoint; by default built from cfg.t3LinkFile. */
+  t3mcp?: T3Sender
+  /** The clock, for the route freshness check. */
+  now?: () => number
 }
 
 export const SEND_MAX = 4000
@@ -61,6 +93,29 @@ export const TURNS_MAX = 20
  */
 export const THREAD_ID = /^[0-9A-Za-z][\w:.%-]{0,199}$/
 
+/**
+ * A send needs a good fleet read at most this old (or three polls, if the
+ * poll is slower). Past it, or after a failed read, the bridge cannot tell
+ * whether the session behind a route is still there, so it does not send.
+ */
+export const ROUTES_FRESH_MS = 60_000
+
+/**
+ * T3's clientRequestId for a send. With the HUD's request id it is a UUID
+ * made from it (the version 5 layout over SHA-1), so a retry of one card
+ * reaches T3 under the same id even across a bridge restart; without one it
+ * is a fresh random UUID, as before. Always UUID-shaped, the form T3 has
+ * been given all along.
+ */
+export function t3RequestId(requestId?: string): string {
+  if (!requestId) return randomUUID()
+  const b = createHash('sha1').update(`claudevr send ${requestId}`).digest().subarray(0, 16)
+  b[6] = (b[6]! & 0x0f) | 0x50
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const h = b.toString('hex')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 export class DashwebAdapter implements SessionBackend {
   readonly name = 'dashweb'
   readonly capabilities = capabilities(['list', 'subscribe', 'send', 'pending', 'transcript'])
@@ -71,12 +126,27 @@ export class DashwebAdapter implements SessionBackend {
   private readonly poller: Poller
   private readonly stream: OfficeStream
   private routes = new Map<string, string>()
+  /** When the routes were last confirmed by a good read, and why the latest read failed, if it did. */
+  private routesAt: number | null = null
+  private readFailed: string | null = null
+  private readonly now: () => number
+  /** Null when sends always go through the CLI (t3.delivery "queue", or no link file configured). */
+  private readonly t3: T3Sender | null
+  /** Why the last send fell back to the CLI; shown with the fleet until an MCP send works. */
+  private t3Warning: string | null = null
 
   constructor(cfg: DashwebConfig, deps: DashwebDeps = {}) {
     this.cfg = cfg
     this.fetch = deps.fetch ?? (globalThis.fetch as unknown as Fetcher)
     this.run = deps.run ?? runCommand
     this.log = deps.log ?? ((...a) => console.log('[dashweb]', ...a))
+    this.now = deps.now ?? Date.now
+    const linkFile = cfg.t3LinkFile
+    this.t3 =
+      cfg.t3Delivery === 'queue'
+        ? null
+        : (deps.t3mcp ?? (linkFile ? new T3Mcp({ linkFile, origin: () => readT3Origin(cfg.t3BaseDir), log: (...a) => this.log('[t3mcp]', ...a) }) : null))
+    if (this.t3?.linkState() === 'expired') this.setT3Warning(`T3 link expired: messages will queue. ${FIX_LINK}`)
     this.poller = new Poller(() => this.list(), cfg.pollMs, this.log)
     this.stream = new OfficeStream(`${cfg.url}/api/sub/office`, { fetch: deps.streamFetch ?? (globalThis.fetch as unknown as StreamFetcher), log: this.log })
   }
@@ -102,10 +172,37 @@ export class DashwebAdapter implements SessionBackend {
     // only switches sends off, and the fleet says so.
     // The office only feeds usage figures: failing, they read as unavailable.
     const asError = (err: unknown) => (err instanceof Error ? err : new Error(String(err)))
-    const [board, t3, office] = await Promise.all([this.getJson('/api/board'), this.getJson('/api/t3').catch(asError), this.getJson('/api/state/office').catch(asError)])
-    const { fleet, routes } = normalise(board, t3, Date.now(), { office, spend: this.stream.spend(), hideCwds: this.cfg.hideCwds })
+    let read: ReturnType<typeof normalise>
+    try {
+      const [board, t3, office] = await Promise.all([this.getJson('/api/board'), this.getJson('/api/t3').catch(asError), this.getJson('/api/state/office').catch(asError)])
+      read = normalise(board, t3, this.now(), { office, spend: this.stream.spend(), hideCwds: this.cfg.hideCwds })
+    } catch (err) {
+      // The routes from the last good read stay, but sends refuse them until a read works again.
+      this.readFailed = asError(err).message
+      throw err
+    }
+    const { fleet, routes } = read
     this.routes = routes
+    this.routesAt = this.now()
+    this.readFailed = null
+    if (this.t3Warning) fleet.warnings.push(this.t3Warning)
     return fleet
+  }
+
+  /** Why the routes cannot be trusted right now, or null when a recent read confirmed them. */
+  private routesDoubt(): string | null {
+    if (this.readFailed) return `the last fleet read failed (${this.readFailed.slice(0, 160)})`
+    if (this.routesAt === null) return 'the fleet has not been read yet'
+    const age = this.now() - this.routesAt
+    if (age > Math.max(ROUTES_FRESH_MS, 3 * this.cfg.pollMs)) return `the last good fleet read is ${Math.round(age / 1000)} s old`
+    return null
+  }
+
+  /** Logs a change of warning once, not on every send. */
+  private setT3Warning(w: string | null): void {
+    if (w === this.t3Warning) return
+    this.log(w ? `sends fall back to the T3 CLI: ${w}` : 'T3 link working again: sends go over MCP')
+    this.t3Warning = w
   }
 
   subscribe(listener: (u: FleetUpdate) => void): () => void {
@@ -119,17 +216,41 @@ export class DashwebAdapter implements SessionBackend {
   }
 
   /**
-   * Queues `text` as the thread's next turn. Only a session the last read
-   * routed to a T3 thread can be sent to; anything else is refused before
-   * the CLI runs.
+   * Delivers `text` to the thread. With a T3 link it goes over MCP in "auto"
+   * mode: an idle thread starts, a running turn takes it at once. Without a
+   * usable link the CLI queues it as the next turn. Only a session the last
+   * read routed to a T3 thread can be sent to, and only while that read is
+   * recent and the latest one worked; anything else is refused before either
+   * runs.
    */
-  async send(id: string, text: string): Promise<SendResult> {
+  async send(id: string, text: string, requestId?: string): Promise<SendResult> {
     if (typeof text !== 'string' || !text.trim()) throw new SendRefused('nothing to send', 400)
     if (text.length > SEND_MAX) throw new SendRefused(`at most ${SEND_MAX} characters`, 400)
     const threadId = this.routes.get(id)
     if (!threadId) throw new SendRefused(`no T3 thread to send to for session ${id.slice(0, 40)}`)
+    const doubt = this.routesDoubt()
+    // 409, not a 5xx: the HUD reads a 5xx other than 501 and 502 as "may have been delivered", and this one surely was not.
+    if (doubt) throw new SendRefused(`cannot confirm the session is still there: ${doubt}. Nothing was sent.`, 409)
     // The thread id goes on the command line; one that looked like a flag would be read as one.
     if (!THREAD_ID.test(threadId)) throw new SendRefused('thread id is not one the CLI can take', 400)
+    if (this.t3) {
+      try {
+        const r = await this.t3.send(threadId, text, t3RequestId(requestId))
+        this.setT3Warning(null)
+        this.log('sent', text.length, 'chars to thread', threadId, 'over T3 MCP:', r.delivery)
+        return { ok: true, said: DELIVERY_SAID[r.delivery] }
+      } catch (err) {
+        // A send that may have landed is never repeated through the CLI: the message could arrive twice.
+        if (!(err instanceof T3McpError) || err.maybeDelivered) {
+          const why = err instanceof Error ? err.message : String(err)
+          throw new Error(`not known whether T3 got the message (${why}). Check the thread before sending again.`)
+        }
+        // T3 read the send and refused it; the CLI would be refused the same
+        // way. A refusal, so nothing went out and a retry may try again.
+        if (err.kind === 'tool') throw new SendRefused(err.message, 502)
+        this.setT3Warning(linkWarning(err))
+      }
+    }
     const said = await this.run(this.cfg.t3Bin, ['thread', 'send', '--base-dir', this.cfg.t3BaseDir, threadId, '-'], text, SEND_TIMEOUT_MS)
     this.log('sent', text.length, 'chars to thread', threadId)
     return { ok: true, said: said.trim().slice(0, 500) }

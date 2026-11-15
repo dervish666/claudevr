@@ -14,6 +14,8 @@
 // The rate windows are the account's, so every session carries a copy; the
 // freshest reading of each window that has not reset since wins, as dashweb's
 // own pages pick it (src/hq/main.ts readFiveHour, src/hq/stats.ts limitsBar).
+// The figure's age is that of the oldest window shown, so staleness is never
+// hidden by one window that happens to be fresh.
 // Context prefers the breakdown's percentage over the status line's, as
 // dashweb's session cards do (src/hq/stats.ts, `ctxPct`).
 
@@ -100,7 +102,9 @@ export function readOffice(raw: unknown, now = Date.now()): OfficeRead {
   const kinds = [...best.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
   const resetNote = [...rolled].filter(k => !best.has(k)).map(k => `${labelOf(k)} window reset since the last reading`)
   if (!kinds.length) return { limits: none(resetNote.join('; ')), contexts }
-  const at = Math.max(...kinds.map(k => best.get(k)!.at))
+  // The windows share one age, so it is the oldest of them: a fresh 5-hour
+  // reading must not make an hour-old weekly one look current.
+  const at = Math.min(...kinds.map(k => best.get(k)!.at))
   const stale = now - at > LIMITS_STALE_MS
   const notes = [...(stale ? [`last reading ${minutes(now - at)} ago: no session has refreshed it since`] : []), ...resetNote]
   return { limits: { value: kinds.map(k => best.get(k)!.w), at, stale, note: notes.length ? notes.join('; ') : null }, contexts }

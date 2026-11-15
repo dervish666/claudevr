@@ -127,18 +127,34 @@ export interface Match {
   score: number
 }
 
+/** A character name or heard-as this short or shorter (letters and digits, spaces aside) must be heard exactly. */
+export const SHORT_NAME = 4
+
+/**
+ * How well heard words fit a character's name. A name of SHORT_NAME
+ * characters or fewer counts only when heard exactly (case and punctuation
+ * aside): at that length the fuzzy score takes ordinary words for it, so a
+ * three-letter name answered to "add" or "by" and swallowed the sentence.
+ * Longer names match as callsigns do, by spelling and by sound.
+ */
+export function characterScore(heard: string, name: string): number {
+  const n = normalise(name)
+  if (n.replace(/ /g, '').length <= SHORT_NAME) return normalise(heard) === n ? 1 : 0
+  return similarity(heard, name)
+}
+
 /** Every target scored against `heard`, best first. */
-export function rank(heard: string, targets: readonly Target[]): Match[] {
+export function rank(heard: string, targets: readonly Target[], score: (heard: string, name: string) => number = similarity): Match[] {
   return targets
-    .map(target => ({ target, score: Math.max(similarity(heard, target.callsign), ...target.heardAs.map(h => similarity(heard, h))) }))
+    .map(target => ({ target, score: Math.max(score(heard, target.callsign), ...target.heardAs.map(h => score(heard, h))) }))
     .sort((x, y) => y.score - x.score)
 }
 
 export type Resolution = { ok: true; target: Target; score: number } | { ok: false; why: 'ambiguous' | 'no-match'; candidates: Target[] }
 
-/** One target, or a reason to ask. */
-export function resolve(heard: string, targets: readonly Target[]): Resolution {
-  const r = rank(heard, targets)
+/** One target, or a reason to ask. Characters pass characterScore; sessions and voices keep the fuzzy match. */
+export function resolve(heard: string, targets: readonly Target[], score: (heard: string, name: string) => number = similarity): Resolution {
+  const r = rank(heard, targets, score)
   const best = r[0]
   if (!best || best.score < ACCEPT) return { ok: false, why: 'no-match', candidates: r.filter(m => m.score >= PLAUSIBLE).slice(0, 4).map(m => m.target) }
   const close = r.filter(m => m.score >= PLAUSIBLE && best.score - m.score <= TIE_MARGIN)
@@ -218,6 +234,9 @@ export function statusAnswer(fleet: Fleet): { say: string; lines: string[] } {
   const lines: string[] = [`${ss.length} session${ss.length === 1 ? '' : 's'}.`]
   const busy = ss.filter(s => s.state === 'working' || s.state === 'thinking')
   if (busy.length) lines.push(`Working: ${names(busy)}.`)
+  const running = (s: Session) => (s.agents ?? []).filter(a => a.state === 'running').length + (s.moreRunning ?? 0)
+  const withAgents = ss.filter(s => running(s) > 0)
+  if (withAgents.length) lines.push(`Sub-agents running: ${withAgents.map(s => `${s.callsign} ${running(s)}`).join(', ')}.`)
   for (const s of ss.filter(s => s.state === 'asking')) lines.push(`${s.callsign} is asking: ${clip(s.asking?.text ?? s.lastLine ?? 'a question', 90)}`)
   const failed = ss.filter(s => s.state === 'failed')
   if (failed.length) lines.push(`Failed: ${names(failed)}.`)
@@ -319,12 +338,14 @@ export function voiceCommand(text: string, input: Pick<InterpretInput, 'voices' 
 const CHARACTER_LIST = /^(?:(?:what|which) characters?(?: are there| do you have| have you got| can you do)?|(?:list|show)(?: me)?(?: the| your)? characters|characters)$/
 const OPERATOR = /^(?:(?:go|switch|change|come)?(?: ?back)? ?(?:to|into) )?(?:the )?(?:operator|plain|normal) mode$|^(?:drop|lose|stop)(?: the)? (?:character|act)$/
 /** Explicit: the words say it is a character, so a name that matches nothing gets an answer. */
-const CHARACTER_SET = /^(?:(?:switch|change) to )?character (.+)$/
+const CHARACTER_SET = /^(?:(?:switch|change|set) (?:to |the |my )?)?character (?:to )?(.+)$/
 /** Loose: taken only when the name is a character. "be quiet" is not a character, so it falls through. Speech-to-text writes a clipped "be" as "B." or "bee". */
-const CHARACTER_LOOSE = [/^(?:be|become|b|bee) (.+)$/, /^(?:(?:switch|change|go) (?:to|into) )?(.+) mode$/]
+const CHARACTER_LOOSE = [/^(?:(?:now|just|can you|could you) )*(?:be|become|b|bee) (.+?)(?: now| again| instead)?$/, /^(?:(?:switch|change|go) (?:to|into) )?(.+) mode$/]
+/** Words that also name a session ("switch to X", "talk to X"): a character only when no session answers to the name. */
+const CHARACTER_SHARED = [/^(?:switch|change|go)(?: back| over)? to (.+)$/, /^(?:i want|give me|get me|bring (?:back|in)|put on|let me (?:talk|speak) to|(?:talk|speak) to)(?: the)? (.+?)(?: back| instead| now)?$/]
 
 /** "be X", "character X", "X mode", "operator mode", "characters". Null when the words are not about the character. */
-export function characterCommand(text: string, input: Pick<InterpretInput, 'characters' | 'character'>): Interpretation | null {
+export function characterCommand(text: string, input: Pick<InterpretInput, 'characters' | 'character'>, isSession: (heard: string) => boolean = () => false): Interpretation | null {
   const chars = input.characters ?? []
   const names = chars.map(c => c.name)
   const cur = input.character ?? null
@@ -332,9 +353,16 @@ export function characterCommand(text: string, input: Pick<InterpretInput, 'char
   if (CHARACTER_LIST.test(text)) return { kind: 'character', character: cur, changed: false, say: names.length ? `Characters: ${names.join(', ')}.${cur ? ` Now: ${cur}.` : ' Now: operator mode.'}` : none }
   if (OPERATOR.test(text)) return { kind: 'character', character: null, changed: cur !== null, say: cur ? 'Operator mode.' : 'Already in operator mode.' }
   const explicit = CHARACTER_SET.exec(text)?.[1]
-  const heard = explicit ?? CHARACTER_LOOSE.map(r => r.exec(text)?.[1]).find(Boolean)
+  // Another character's name and nothing else is a change to it. Exact only: a fuzzy one-word match would eat short answers meant for a session.
+  const bare = chars.find(c => c.name !== cur && (c.name === text || c.heardAs.some(h => h.toLowerCase() === text)))
+  const shared = [...CHARACTER_SHARED.map(r => r.exec(text)?.[1]), bare?.name].find(h => h && !isSession(h))
+  const heard = explicit ?? CHARACTER_LOOSE.map(r => r.exec(text)?.[1]).find(Boolean) ?? shared
   if (!heard) return null
-  const r = resolve(heard, chars.map(c => ({ sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] })))
+  const r = resolve(
+    heard,
+    chars.map(c => ({ sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] })),
+    characterScore,
+  )
   if (r.ok) return { kind: 'character', character: r.target.callsign, changed: r.target.callsign !== cur, say: r.target.callsign === cur ? `Already ${r.target.callsign}.` : `Character: ${r.target.callsign}.` }
   if (!explicit || heard.split(' ').length > 3) return null
   if (!names.length) return { kind: 'character', character: cur, changed: false, say: none }
@@ -384,10 +412,16 @@ function whichSay(why: 'ambiguous' | 'no-match' | 'no-dispatcher', heard: string
 export function addressedTo(ts: readonly Token[], c: { name: string; heardAs: readonly string[] }): number {
   const target: Target = { sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] }
   const most = Math.max(...[c.name, ...c.heardAs].map(n => n.trim().split(/\s+/).length))
-  for (let n = Math.min(most, ts.length); n >= 1; n--) {
-    if (rank(ts.slice(0, n).map(t => t.norm).join(' '), [target])[0]!.score >= ACCEPT) return n
+  // The best match wins and a tie goes to fewer words, so the name does not
+  // swallow the word after it: "Atlas be Juniper" is "Atlas" then "be Juniper",
+  // though "atlas be" is close enough to a two-word mishearing of the name.
+  let best = { n: 0, score: 0 }
+  for (let n = 1; n <= Math.min(most, ts.length); n++) {
+    // A short name must be the words exactly, or "Ada" would take "add a test" as being spoken to.
+    const score = rank(ts.slice(0, n).map(t => t.norm).join(' '), [target], characterScore)[0]!.score
+    if (score >= ACCEPT && score > best.score) best = { n, score }
   }
-  return 0
+  return best.n
 }
 
 export function interpret(input: InterpretInput): Interpretation {
@@ -434,7 +468,7 @@ export function interpret(input: InterpretInput): Interpretation {
   if (input.context === 'none') {
     // With no characters configured nothing here matches, so operator mode parses as it always has.
     if (input.characters?.length) {
-      const c = characterCommand(text, input)
+      const c = characterCommand(text, input, h => (rank(h, targets)[0]?.score ?? 0) >= ACCEPT)
       if (c) return c
     }
     const v = voiceCommand(text, input)
@@ -453,9 +487,12 @@ export function interpret(input: InterpretInput): Interpretation {
     return { kind: 'limits', say: a.say, lines: a.lines }
   }
 
-  // Answering "who is it for?": the whole utterance is a name.
+  // Answering "who is it for?": the whole utterance is a name. Matched
+  // against every session and only then checked, so a name that cannot be
+  // sent to is said to be one, never swapped for a look-alike that can.
   if (input.context === 'target') {
-    const r = resolve(text.replace(/^(?:to|for|it's for|its for|it is for) /, ''), sendable)
+    const r = resolve(text.replace(/^(?:to|for|it's for|its for|it is for) /, ''), targets)
+    if (r.ok && !byId(r.target.sessionId).canSend) return { kind: 'unknown', say: `${r.target.callsign} cannot be sent to from here.` }
     if (r.ok) return { kind: 'target', sessionId: r.target.sessionId, callsign: r.target.callsign, say: `To ${r.target.callsign}.` }
     // Not a name: fall through, so "status" or a new "tell" still work.
   }
@@ -488,16 +525,15 @@ export function interpret(input: InterpretInput): Interpretation {
 
   // tell X <message>
   if (TELL.has(ts[0]!.norm) && ts.length > 1) {
-    const { name, message } = splitName(ts.slice(1), sendable.length ? sendable : targets)
+    // The name is matched against every session first and checked second:
+    // matching only the sendable ones would turn "tell Tally" into a card for
+    // a sendable "Tali" whenever Tally itself cannot be sent to.
+    const { name, message } = splitName(ts.slice(1), targets)
     const heard = name.map(t => t.norm).join(' ')
     const body = joinRaw(message)
-    const r = resolve(heard, sendable)
-    if (!r.ok) {
-      // A name that matches a session that cannot be sent to says so, rather than asking.
-      const unreachable = resolve(heard, targets)
-      if (unreachable.ok) return { kind: 'unknown', say: `${unreachable.target.callsign} cannot be sent to from here.` }
-      return which(r.why, heard, r.candidates, body)
-    }
+    const r = resolve(heard, targets)
+    if (!r.ok) return which(r.why, heard, r.candidates, body)
+    if (!byId(r.target.sessionId).canSend) return { kind: 'unknown', say: `${r.target.callsign} cannot be sent to from here.` }
     if (!body) return { kind: 'unknown', say: `Tell ${r.target.callsign} what? Say it again with the message.` }
     return { kind: 'tell', sessionId: r.target.sessionId, callsign: r.target.callsign, text: body, viaDispatcher: false, say: `To ${r.target.callsign}: ${body}` }
   }

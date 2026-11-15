@@ -21,6 +21,13 @@ export interface DashwebConfig {
   pollMs: number
   /** Working directories whose sessions are the bridge's own and stay out of the fleet. */
   hideCwds?: string[]
+  /**
+   * t3.delivery. "auto": with a T3 link, a send starts an idle thread or goes
+   * into the running turn. "queue": always the CLI, which queues.
+   */
+  t3Delivery?: 'auto' | 'queue'
+  /** Where npm run t3-link keeps the link; no MCP sends without it. */
+  t3LinkFile?: string
 }
 
 export interface SttConfig {
@@ -76,9 +83,9 @@ export interface Config {
   /** Client IPs allowed besides loopback. */
   allowIps: string[]
   /**
-   * Give the pairing token to any allowed address that asks, so a headset
-   * pairs with no typing. Off by default: with it on, the allow list is the
-   * only thing between the LAN and the send path.
+   * Deprecated: give the legacy token to any allowed address that asks, so a
+   * headset pairs with no code. Off by default: with it on, the allow list is
+   * the only thing between the LAN and the send path. Pairing codes replace it.
    */
   autoPair: boolean
   stateDir: string
@@ -256,6 +263,8 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
       t3BaseDir: absolute(String(t3BaseDir), REPO_ROOT),
       pollMs: int(env.CLAUDEVR_DASHWEB_POLL_MS ?? fileDash.pollMs, 2000, 'dashweb.pollMs'),
       hideCwds: [join(stateDir, 'frontman')],
+      t3Delivery: oneOf(env.CLAUDEVR_T3_DELIVERY ?? obj(file.t3).delivery, ['auto', 'queue'] as const, 'auto', 't3.delivery'),
+      t3LinkFile: join(stateDir, 't3-link.json'),
     }
   }
 

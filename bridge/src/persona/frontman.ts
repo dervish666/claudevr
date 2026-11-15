@@ -53,6 +53,10 @@ export interface CliOptions {
   maxContextTokens?: number
   /** A turn still unanswered after this long means the child is stuck: it is killed and restarted. */
   stuckMs?: number
+  /** A replaced child gets this long after SIGTERM before SIGKILL; the next child waits for it to go. */
+  retireGraceMs?: number
+  /** Turns that may wait for the model; past this a turn is refused at once instead of queueing. */
+  maxQueue?: number
   log?: (...a: unknown[]) => void
   /** For tests: what to run instead of the real CLI. */
   spawnChild?: (args: string[], env: NodeJS.ProcessEnv, cwd: string) => ChildProcessWithoutNullStreams
@@ -110,9 +114,15 @@ export class CliFrontMan implements FrontMan {
   private closed = false
   /** Bumped per child, so events from a child already replaced are ignored. */
   private gen = 0
+  /**
+   * Children told to stop that have not exited yet, with their kill timer.
+   * A new child is not started while any is here, so at most one CLI runs
+   * at a time however often the persona changes.
+   */
+  private readonly retiring = new Map<ChildProcessWithoutNullStreams, NodeJS.Timeout>()
 
   constructor(o: CliOptions) {
-    this.o = { maxTurns: 16, maxContextTokens: 14_000, stuckMs: 30_000, log: (...a) => console.log('[frontman]', ...a), ...o }
+    this.o = { maxTurns: 16, maxContextTokens: 14_000, stuckMs: 30_000, retireGraceMs: 2_000, maxQueue: 8, log: (...a) => console.log('[frontman]', ...a), ...o }
     this.name = `claude cli (${o.model})`
     this.st = { provider: this.name, state: 'off', error: null }
   }
@@ -150,6 +160,8 @@ export class CliFrontMan implements FrontMan {
     return new Promise((ok, fail) => {
       if (this.closed || this.prompt === null) return fail(new FrontManUnavailable(this.closed ? 'closed' : 'no persona configured'))
       if (!this.child && Date.now() < this.retryAt) return fail(new FrontManUnavailable(this.st.error ?? 'restarting'))
+      // Every turn waits its whole timeout at worst, so a flood would hold a long queue; it gets the plain line instead.
+      if (this.queue.length >= this.o.maxQueue) return fail(new FrontManUnavailable(`busy: ${this.queue.length} turns already waiting for the model`))
       const t: Turn = { prompt, deadline: Date.now() + timeoutMs, ok, fail, settled: false, text: '', sentAt: 0 }
       const timer = setTimeout(() => this.settle(t, new FrontManTimeout(timeoutMs)), timeoutMs)
       const done = (fn: () => void) => () => {
@@ -174,6 +186,8 @@ export class CliFrontMan implements FrontMan {
   private start(): void {
     if (this.child || this.closed || this.prompt === null) return
     if (Date.now() < this.retryAt) return
+    // The old child is still going; the last one of those to exit starts this one.
+    if (this.retiring.size) return
     const gen = ++this.gen
     const args = cliArgs(this.o.model, this.prompt)
     const env = childEnv(this.o.env ?? process.env)
@@ -238,11 +252,9 @@ export class CliFrontMan implements FrontMan {
       t.text += String(m.event.delta.text ?? '')
       return
     }
-    // The text is complete at message_stop; the result line follows a little later.
-    if (m.type === 'stream_event' && m.event?.type === 'message_stop' && t.text.trim()) {
-      this.settle(t, t.text)
-      return
-    }
+    // Only the result settles a turn. The text is complete at message_stop,
+    // but the result that follows can still say the turn failed (is_error),
+    // and a failed turn's text must not be spoken as if it were a line.
     if (m.type === 'result') {
       if (this.stuckTimer) clearTimeout(this.stuckTimer)
       this.stuckTimer = null
@@ -324,6 +336,40 @@ export class CliFrontMan implements FrontMan {
     this.stuckTimer = null
     if (this.current) this.settle(this.current, new FrontManUnavailable(why))
     this.current = null
+    this.retire(c, why)
+  }
+
+  /**
+   * Asks a replaced child to stop and keeps track of it until it has: SIGTERM
+   * (and its stdin closed) first, SIGKILL after the grace period, and if even
+   * that leaves it standing, the bridge stops waiting so the front man is not
+   * held down by one wedged process.
+   */
+  private retire(c: ChildProcessWithoutNullStreams, why: string): void {
+    // Already gone, or never started (a failed spawn has no pid and no exit to wait for).
+    if (c.exitCode !== null || c.signalCode !== null || c.pid === undefined) return
+    const grace = this.o.retireGraceMs
+    const gone = () => {
+      const timer = this.retiring.get(c)
+      if (timer) clearTimeout(timer)
+      if (!this.retiring.delete(c)) return
+      if (!this.retiring.size) this.start()
+    }
+    c.once('exit', gone)
+    const kill = setTimeout(() => {
+      this.o.log(`the replaced CLI (pid ${c.pid}) did not exit ${grace} ms after SIGTERM; sending SIGKILL`)
+      c.kill('SIGKILL')
+      const giveUp = setTimeout(() => {
+        this.o.log(`the replaced CLI (pid ${c.pid}) is still there after SIGKILL; carrying on without waiting for it`)
+        gone()
+      }, grace)
+      giveUp.unref()
+      this.retiring.set(c, giveUp)
+    }, grace)
+    // A retiring child never keeps the bridge (or a test) from exiting.
+    kill.unref()
+    this.retiring.set(c, kill)
+    this.o.log(`stopping the CLI (pid ${c.pid}): ${why}`)
     c.stdin.end()
     c.kill('SIGTERM')
   }

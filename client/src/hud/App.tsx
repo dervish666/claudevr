@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Fleet, Need, Session, SessionState } from '../../../shared/protocol.ts'
-import { autoPair, checkToken, cleanToken, forgetToken, readToken, saveToken } from '../pairing.ts'
+import { autoPair, forgetToken, readToken } from '../pairing.ts'
+import { Pairing } from './Pairing.tsx'
 import { age, useBridge, useNow, type BridgeState } from './useBridge.ts'
 import { Reader } from './Reader.tsx'
 import { VoiceDock } from './Voice.tsx'
 import { useVoice } from './voice/useVoice.ts'
 import { ContextBadge, LimitsStrip } from './Usage.tsx'
+import { AGENT_WORDS, runTime, shownAgents } from '../../../shared/agents.ts'
 import { TEXT_SIZES, useTextSize, type TextSize } from './textsize.ts'
-import { EnterInstrument, isDemoTile, useInstrumentModule } from './InstrumentEntry.tsx'
+import { EnterInstrument, useInstrumentModule } from './InstrumentEntry.tsx'
 
 /** No word from the bridge for this long and the HUD calls its data stale. */
 const STALE_MS = 10_000
@@ -35,8 +37,8 @@ function saveSel(id: string | null): void {
 
 export function App() {
   const [token, setToken] = useState<string | null>(() => readToken())
-  // With no stored token, ask the bridge for one before asking the person.
-  // Tried once: after "unpair" the form shows instead of pairing straight back.
+  // With no stored token, try autoPair (deprecated) before showing a pairing
+  // code. Tried once: after "unpair" the code shows instead of pairing straight back.
   const [asked, setAsked] = useState(false)
   useEffect(() => {
     if (token || asked) return
@@ -68,38 +70,6 @@ export function App() {
   )
 }
 
-function Pairing({ onPaired, reason }: { onPaired: (t: string) => void; reason?: string }) {
-  const [value, setValue] = useState('')
-  const [error, setError] = useState<string | null>(reason ?? null)
-  const [busy, setBusy] = useState(false)
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    const t = cleanToken(value)
-    setBusy(true)
-    const r = await checkToken(t)
-    setBusy(false)
-    if (!r.ok) return setError(r.error)
-    saveToken(t)
-    onPaired(t)
-  }
-  return (
-    <main className="pairing">
-      <h1>Pair this headset</h1>
-      <p>Type the pairing token the bridge printed in its terminal. You only do this once per browser.</p>
-      <form onSubmit={submit}>
-        <input aria-label="Pairing token" value={value} onChange={e => setValue(e.target.value)} autoComplete="off" autoCapitalize="off" spellCheck={false} autoFocus />
-        <button className="big" type="submit" disabled={busy || !value.trim()}>
-          {busy ? 'Checking…' : 'Pair'}
-        </button>
-      </form>
-      {error && <div className="alarm">{error}</div>}
-      <p className="muted">
-        <a href="/probe">Headset probe</a>
-      </p>
-    </main>
-  )
-}
-
 function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   const bridge = useBridge(token)
   const [textSize, setTextSize] = useTextSize()
@@ -127,10 +97,6 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   const [enterError, setEnterError] = useState<string | null>(null)
   const instrumentOn = xrActive || PREVIEW
   const xrFocus = xrSel && fleet?.sessions.some(s => s.id === xrSel) ? xrSel : null
-  // A demo tile has nothing behind it: speech that would go to the selection
-  // or fall through to the dispatcher is refused while one is selected.
-  const refuseSend = useRef<((m: { sessionId: string; viaDispatcher: boolean; viaFocus: boolean }) => string | null) | null>(null)
-  refuseSend.current = instrumentOn && isDemoTile(xrSel) ? m => (m.viaDispatcher || m.viaFocus ? 'A demo tile is selected, and demo tiles never send. Nothing was sent. Pick a real tile, or press the iris for the dispatcher.' : null) : null
   const voice = useVoice({
     token,
     voice: bridge.voice,
@@ -138,7 +104,6 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
     onSelect: instrumentOn ? setXrSel : pick,
     onHome: instrumentOn ? () => setXrSel(null) : () => setOpen(null),
     immersive,
-    refuseSend,
     announce: bridge.announce,
     post: bridge.post,
   })
@@ -159,8 +124,8 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
     }
   }, [fleet, selected])
 
-  // A refused token usually means the bridge made a new one. Fetch it and
-  // reload; if the bridge hands back the same token, the form below stays.
+  // A refused token was revoked, or the bridge made a new legacy one. With
+  // autoPair on, fetch the new one and reload; otherwise pair again with a code.
   const refused = bridge.link === 'unauthorized'
   useEffect(() => {
     if (!refused) return
@@ -207,7 +172,7 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
       {!fleet ? (
         <div className="empty-big">{bridge.link !== 'open' ? 'No fleet data yet.' : bridge.status && !bridge.status.ok ? 'No fleet: the backend has not been read yet.' : 'Connected. Waiting for the first read of the fleet…'}</div>
       ) : reading ? (
-        <Reader key={reading.id} s={reading} token={token} now={now} stateWord={STATE_WORDS[reading.state]} waiting={fleet.needs.length} onClose={() => setOpen(null)} />
+        <Reader key={reading.id} s={reading} token={token} now={now} stateWord={STATE_WORDS[reading.state]} waiting={fleet.needs.length} onClose={() => setOpen(null)} character={voice.character} conversation={bridge.conversation} />
       ) : (
         <>
           <NeedsQueue needs={fleet.needs} now={now} onPick={id => id && pick(id)} />
@@ -327,8 +292,31 @@ function Card({ s, now, selected, onPick }: { s: Session; now: number; selected:
       {s.action && <span className="action">{s.action}</span>}
       {s.asking && <span className="asking">{s.asking.text}</span>}
       <span className="last">{s.lastLine ?? 'Nothing said yet.'}</span>
+      <SubAgents s={s} now={now} />
       <span className="card-open">Open to read ›</span>
     </button>
+  )
+}
+
+/** The session's sub-agents, one compact row each: running ones, and finished ones for a couple of minutes. Read only. */
+function SubAgents({ s, now }: { s: Session; now: number }) {
+  const { agents, hiddenRunning } = shownAgents(s, now)
+  if (!agents.length && !hiddenRunning) return null
+  return (
+    <span className="subagents" role="list" aria-label="Sub-agents">
+      {agents.map(a => (
+        <span key={a.id} role="listitem" className={`subagent ${a.state}`}>
+          <span className="sa-type">{a.type}</span>
+          <span className="sa-desc">{a.description}</span>
+          <span className="sa-state">
+            {AGENT_WORDS[a.state]}
+            {runTime(a, now) ? ` · ${runTime(a, now)}` : ''}
+          </span>
+          {a.state === 'running' && a.now && <span className="sa-now">{a.now}</span>}
+        </span>
+      ))}
+      {hiddenRunning > 0 && <span className="subagents-more">+{hiddenRunning} more running</span>}
+    </span>
   )
 }
 

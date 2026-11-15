@@ -281,7 +281,7 @@ root.innerHTML = `
   <div id="post" class="post">Not sent yet</div>
   <ul id="list" class="checks"></ul>
   <form id="pair" class="pair" hidden>
-    <label for="token">Pairing token, from the bridge's terminal</label>
+    <label for="token">Token, from the bridge's pairing-token file (or pair with a code on the HUD page)</label>
     <input id="token" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" />
     <button class="big" type="submit">Pair and send</button>
   </form>
@@ -333,7 +333,7 @@ async function send(phase: string): Promise<void> {
   const token = readToken() ?? (await autoPair())
   if (!token) {
     post.className = 'post bad'
-    post.textContent = 'NOT SENT: no pairing token yet. Enter it below.'
+    post.textContent = 'NOT SENT: this browser is not paired yet. Pair it on the HUD page (/) with a code, or enter a token below.'
     pairForm.hidden = false
     return
   }
@@ -353,7 +353,7 @@ async function send(phase: string): Promise<void> {
       const fresh = await autoPair()
       if (fresh && fresh !== token) return send(phase)
       post.className = 'post bad'
-      post.textContent = 'NOT SENT: the bridge refused the pairing token. Enter it again below.'
+      post.textContent = "NOT SENT: the bridge refused this browser's token. Pair again on the HUD page (/), or enter a token below."
       pairForm.hidden = false
       return
     }

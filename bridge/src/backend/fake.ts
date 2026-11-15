@@ -1,6 +1,7 @@
 // A SessionBackend on fixtures, for tests and for demo mode
 // (CLAUDEVR_BACKEND=fake). Nothing leaves the process: a send is kept in
-// `sent` and shows up in the session's messages.
+// `sent` and shows up in the session's messages, and a send to the
+// dispatcher gets a canned answer on the next demo step.
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,6 +12,7 @@ export interface FakeSent {
   id: string
   text: string
   at: number
+  requestId?: string
 }
 
 export class FakeAdapter implements SessionBackend {
@@ -24,6 +26,9 @@ export class FakeAdapter implements SessionBackend {
 
   private live: NodeJS.Timeout | null = null
   private liveStep = 0
+  /** A message the dispatcher has been sent and not yet answered; the next demo step answers it. */
+  private dispatcherOwes = false
+  private dispatcherReplies = 0
 
   constructor(fleet: Fleet, opts: { pollMs?: number; now?: () => number; log?: (...a: unknown[]) => void; file?: string } = {}) {
     this.fleet = structuredClone(fleet)
@@ -45,6 +50,11 @@ export class FakeAdapter implements SessionBackend {
       s.startedAt = move(s.startedAt)
       for (const m of s.messages) m.at = move(m.at)
       if (s.context) s.context.at = move(s.context.at)
+      for (const a of s.agents ?? []) {
+        a.startedAt = move(a.startedAt)
+        a.endedAt = move(a.endedAt)
+        for (const r of a.recent) r.at = move(r.at)
+      }
     }
     for (const n of fleet.needs) n.since = move(n.since)
     if (fleet.ledger) fleet.ledger.changedAt = move(fleet.ledger.changedAt)
@@ -74,15 +84,23 @@ export class FakeAdapter implements SessionBackend {
     return this.poller.subscribe(listener)
   }
 
-  async send(id: string, text: string): Promise<SendResult> {
+  async send(id: string, text: string, requestId?: string): Promise<SendResult> {
     if (this.down) throw new Error(this.down)
     if (typeof text !== 'string' || !text.trim()) throw new SendRefused('nothing to send', 400)
     const s = this.fleet.sessions.find(x => x.id === id)
     if (!s) throw new SendRefused(`no session ${id.slice(0, 40)}`)
     if (!s.canSend) throw new SendRefused(`session ${s.callsign} cannot be sent to`)
     const at = this.now()
-    this.sent.push({ id, text, at })
+    this.sent.push({ id, text, at, ...(requestId ? { requestId } : {}) })
     s.messages = [...s.messages, { at, text: `(sent from ClaudeVR) ${text}` }].slice(-6)
+    // With demo motion on, the dispatcher works on what it was sent and answers on the next step.
+    if (s.kind === 'dispatcher') {
+      this.dispatcherOwes = true
+      if (this.live) {
+        s.state = 'working'
+        s.action = 'Routing your message'
+      }
+    }
     return { ok: true, said: `queued for ${s.callsign} (fake backend, nothing left this process)` }
   }
 
@@ -123,6 +141,7 @@ export class FakeAdapter implements SessionBackend {
 
   /** One step of the demo motion; public so a test can drive it without a timer. */
   step(): void {
+    if (this.dispatcherOwes) return this.dispatcherAnswers()
     const agents = this.fleet.sessions.filter(s => s.kind !== 'dispatcher')
     if (!agents.length) return
     const n = this.liveStep++
@@ -142,6 +161,19 @@ export class FakeAdapter implements SessionBackend {
     s.activeAt = at
   }
 
+  private dispatcherAnswers(): void {
+    this.dispatcherOwes = false
+    const d = this.fleet.sessions.find(s => s.kind === 'dispatcher')
+    if (!d) return
+    const line = DISPATCHER_LINES[this.dispatcherReplies++ % DISPATCHER_LINES.length]!
+    const at = this.now()
+    d.state = 'idle'
+    d.action = null
+    d.messages = [...d.messages, { at, text: line }].slice(-6)
+    d.lastLine = line.split('\n')[0]!
+    d.activeAt = at
+  }
+
   close(): void {
     this.poller.stop()
     if (this.live) clearInterval(this.live)
@@ -155,4 +187,10 @@ const LIVE_LINES = [
   'Two flaky tests in the suite, both timing out on CI only.\nI marked them and opened an issue.',
   'Done. The export now streams instead of building the file in memory.\nPeak memory went from 1.4 GB to 90 MB.',
   'I need the staging credentials to go further.\nThey are not in the vault.',
+]
+
+const DISPATCHER_LINES = [
+  'Routed that to Harbour; it has the rota export already open.\nDo you want the parser fix held until Harbour is done?',
+  'Quill picked it up. It expects to finish within the hour and will report back here.',
+  'Nobody is free for that right now: Harbour and Quill are both mid-task.\nShall I queue it for whoever finishes first?',
 ]
