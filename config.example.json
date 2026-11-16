@@ -4,7 +4,6 @@
   "allowIps": [
     "192.168.1.50"
   ],
-  "autoPair": false,
   "sendsPerMinute": 6,
   "sendsPerHour": 60,
   "t3": {

@@ -11,7 +11,6 @@
 //   GET  /api/pair/devices  paired devices, the legacy token, codes waiting (never the codes)   this machine only + origin
 //   POST /api/pair/approve  { code } -> pairs the device showing it; 10 wrong codes a minute    this machine only + Origin header required
 //   POST /api/pair/revoke   { id } or { legacy: true } -> unpairs it and closes its sockets     this machine only + Origin header required
-//   POST /api/pair    the legacy token, if autoPair is on (deprecated)   address check + origin
 //
 //   GET  /api/health  backend status               address check + token
 //   GET  /api/fleet   the last fleet read          address check + token
@@ -118,7 +117,6 @@ export interface BridgeOptions {
   notify?: (text: string) => void
   allowIps: string[]
   /** Deprecated: hand the legacy token to any allowed address that asks, so nobody pairs. */
-  autoPair?: boolean
   clientDir: string
   probeLog: string
   /** Where instrument mode's measurements go; next to the probe log unless set. */
@@ -441,17 +439,6 @@ export function createBridge(o: BridgeOptions): Bridge {
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL, ip: string): Promise<void> {
     const path = url.pathname
-    // Auto-pairing (deprecated): hands the legacy token to any allowed
-    // address that asks. It answers only when autoPair is on, and the address
-    // check has already passed, so with autoPair on the allow list alone
-    // decides who may use the bridge.
-    if (path === '/api/pair' && req.method === 'POST') {
-      if (!admit(req, res, path, ip)) return
-      if (!o.autoPair) return sendJson(res, 403, { error: 'auto-pairing is off; pair with the code this page shows' })
-      const token = devices.ensureLegacy()
-      log(`pair: gave the legacy token to ${ip} (autoPair is on)`)
-      return sendJson(res, 200, { token })
-    }
     // The handshake, by which a browser with no token gets one.
     if (path.startsWith('/api/pair/')) return admit(req, res, path, ip) ? pairRoute(req, res, url, ip) : undefined
     const cred = authorise(req, res, path, ip)
@@ -599,7 +586,7 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (path === '/api/pair/devices' && req.method === 'GET') {
       // waiting() first, because it sweeps expired requests, which can unpair a device that never collected its token.
       const waiting = pairing.waiting()
-      return sendJson(res, 200, { devices: devices.list(), legacy: { active: devices.legacyActive() }, waiting, autoPair: !!o.autoPair })
+      return sendJson(res, 200, { devices: devices.list(), legacy: { active: devices.legacyActive() }, waiting })
     }
     if (path === '/api/pair/approve' && req.method === 'POST') {
       const body = asObject(await readBody(req, PAIR_BODY_MAX))
@@ -617,7 +604,7 @@ export function createBridge(o: BridgeOptions): Bridge {
       const body = asObject(await readBody(req, PAIR_BODY_MAX))
       if (body.legacy === true) {
         const was = devices.revokeLegacy()
-        if (was) log(`pair: revoked the legacy token${o.autoPair ? '; autoPair is on, so the next browser that asks gets a new one' : ''}`)
+        if (was) log(`pair: revoked the legacy token`)
         return sendJson(res, 200, { ok: true, revoked: was ? 'legacy' : null, legacy: { active: devices.legacyActive() } })
       }
       if (typeof body.id !== 'string' || !body.id) return sendJson(res, 400, { error: 'id: the device to revoke, or legacy: true' })

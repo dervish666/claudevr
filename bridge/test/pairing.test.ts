@@ -62,7 +62,7 @@ interface Rig {
 }
 
 let n = 0
-async function start(o: { limits?: Partial<PairLimits>; autoPair?: boolean; legacy?: boolean } = {}): Promise<Rig> {
+async function start(o: { limits?: Partial<PairLimits>; legacy?: boolean } = {}): Promise<Rig> {
   const state = join(dir, `state-${++n}`)
   mkdirSync(state, { recursive: true })
   if (o.legacy !== false) writeFileSync(join(state, 'pairing-token'), `${LEGACY}\n`, { mode: 0o600 })
@@ -84,7 +84,6 @@ async function start(o: { limits?: Partial<PairLimits>; autoPair?: boolean; lega
     pairing,
     notify: text => notes.push(text),
     allowIps: LAN ? [LAN] : [],
-    autoPair: o.autoPair,
     clientDir: join(dir, 'client'),
     probeLog: join(state, 'probe.log'),
     cert,
@@ -409,20 +408,7 @@ test('legacy token: still accepted and listed; revoking it deletes its file and 
   assert.equal(existsSync(join(r.state, 'pairing-token')), false)
   assert.equal((await call(r.port, 'GET', '/api/health', { token: LEGACY })).status, 401)
   assert.equal((await listed(r)).body.legacy.active, false)
-  assert.equal(new DeviceStore({ file: join(r.state, 'devices.json'), legacyFile: join(r.state, 'pairing-token') }).legacyActive(), false, 'a restart without autoPair makes no new one')
-})
-
-test('autoPair, deprecated, still hands out the legacy token; after a revoke it makes a new one', async () => {
-  const r = await start({ autoPair: true })
-  const first = await call(r.port, 'POST', '/api/pair')
-  assert.equal(first.body.token, LEGACY)
-  assert.equal((await revoke(r, { legacy: true })).status, 200)
-  const next = await call(r.port, 'POST', '/api/pair')
-  assert.equal(next.status, 200)
-  secrets.add(next.body.token)
-  assert.notEqual(next.body.token, LEGACY)
-  assert.equal((await call(r.port, 'GET', '/api/health', { token: next.body.token })).status, 200)
-  assert.equal((await call(r.port, 'GET', '/api/health', { token: LEGACY })).status, 401)
+  assert.equal(new DeviceStore({ file: join(r.state, 'devices.json'), legacyFile: join(r.state, 'pairing-token') }).legacyActive(), false, 'a restart makes no new one')
 })
 
 test('devices.json: mode 600, written whole, holds hashes and never a token, and a restart keeps the pairing', async () => {

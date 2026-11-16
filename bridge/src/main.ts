@@ -23,9 +23,6 @@ function main(): void {
   const certs = ensureCert(join(cfg.stateDir, 'certs'), log)
   const legacyFile = join(cfg.stateDir, 'pairing-token')
   const devices = new DeviceStore({ file: join(cfg.stateDir, 'devices.json'), legacyFile, log })
-  // autoPair hands out the legacy token, so it needs one. Without autoPair a
-  // new install makes none, and devices pair with a code instead.
-  if (cfg.autoPair) devices.ensureLegacy()
   const pairing = new PairingRequests({ devices, log })
 
   let backend: SessionBackend
@@ -133,7 +130,6 @@ function main(): void {
     pairing,
     notify: process.platform === 'darwin' ? text => notifyMac(text, log) : undefined,
     allowIps: cfg.allowIps,
-    autoPair: cfg.autoPair,
     clientDir: cfg.clientDir,
     probeLog: join(cfg.stateDir, 'probe.log'),
     cert: readFileSync(certs.cert),
@@ -178,7 +174,6 @@ function main(): void {
       '',
     ]
     console.log(lines.join('\n'))
-    if (cfg.autoPair) log('autoPair is on: any address on allowIps gets the legacy token without pairing. Turn it off to use the pairing handshake.')
   })
 
   const stop = (sig: string) => {

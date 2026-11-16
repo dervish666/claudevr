@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Fleet, Need, Session, SessionState } from '../../../shared/protocol.ts'
-import { autoPair, forgetToken, readToken, unpair } from '../pairing.ts'
+import { forgetToken, readToken, unpair } from '../pairing.ts'
 import { alarmLine, alarmsOf } from './alarms.ts'
 import { VoiceFocus } from './focus.ts'
 import { Pairing } from './Pairing.tsx'
@@ -40,29 +40,8 @@ function saveSel(id: string | null): void {
 
 export function App() {
   const [token, setToken] = useState<string | null>(() => readToken())
-  // With no stored token, try autoPair (deprecated) before showing a pairing
-  // code. Tried once: after "unpair" the code shows instead of pairing straight back.
-  const [asked, setAsked] = useState(false)
   // Why the token may still work after an unpair, shown on the pairing screen that follows.
   const [unpairNote, setUnpairNote] = useState<string | null>(null)
-  useEffect(() => {
-    if (token || asked) return
-    let live = true
-    void autoPair().then(t => {
-      if (!live) return
-      if (t) setToken(t)
-      setAsked(true)
-    })
-    return () => {
-      live = false
-    }
-  }, [token, asked])
-  if (!token && !asked)
-    return (
-      <main className="pairing">
-        <h1>Pairing…</h1>
-      </main>
-    )
   if (!token) return <Pairing onPaired={t => setToken(t)} reason={unpairNote ?? undefined} />
   return (
     <Hud
@@ -72,8 +51,6 @@ export function App() {
         // Forgotten here whatever the bridge said: he asked for this browser to stop using it.
         forgetToken()
         setUnpairNote(r.revoked ? null : `Unpaired here, but the bridge did not revoke the token, so it may still work: ${r.reason}`)
-        // No autoPair straight back: the code shows instead.
-        setAsked(true)
         setToken(null)
       }}
     />
@@ -132,17 +109,10 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => Promise<void>
     }
   }, [fleet, selected])
 
-  // A refused token was revoked, or the bridge made a new legacy one. With
-  // autoPair on, fetch the new one and reload; otherwise pair again with a code.
+  // A refused token was revoked: pair again with a code.
   // Not while he is unpairing: the revoke closes this page's socket before the answer lands.
   const [unpairing, setUnpairing] = useState(false)
   const refused = bridge.link === 'unauthorized' && !unpairing
-  useEffect(() => {
-    if (!refused) return
-    void autoPair().then(t => {
-      if (t && t !== token) location.reload()
-    })
-  }, [refused, token])
 
   if (refused) return <Pairing onPaired={() => location.reload()} reason={`The bridge refused this browser's token (${bridge.linkError}). Pair again.`} />
 

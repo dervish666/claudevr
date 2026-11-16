@@ -97,12 +97,6 @@ export interface Config {
   port: number
   /** Client IPs allowed besides loopback. */
   allowIps: string[]
-  /**
-   * Deprecated: give the legacy token to any allowed address that asks, so a
-   * headset pairs with no code. Off by default: with it on, the allow list is
-   * the only thing between the LAN and the send path. Pairing codes replace it.
-   */
-  autoPair: boolean
   stateDir: string
   /** Theme packs, one folder each: <stateDir>/themes unless CLAUDEVR_THEMES_DIR names another (the repo's themes/ for a demo). */
   themesDir: string
@@ -301,6 +295,10 @@ function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T,
 export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => void = () => {}): Config {
   const stateDir = absolute(env.CLAUDEVR_STATE_DIR ?? '.local', REPO_ROOT)
   const file = readLocal(env.CLAUDEVR_CONFIG ? absolute(env.CLAUDEVR_CONFIG, REPO_ROOT) : join(stateDir, 'config.json'), log)
+  // autoPair handed the legacy token to any allowed address. It is gone, and an old
+  // file or environment that still names it must not quietly mean something else.
+  if ('autoPair' in file) throw new Error('autoPair was removed: pairing is by code only. Delete the "autoPair" key from the config file.')
+  if (env.CLAUDEVR_AUTO_PAIR !== undefined) throw new Error('CLAUDEVR_AUTO_PAIR was removed: pairing is by code only. Unset it.')
   const fileDash = (typeof file.dashweb === 'object' && file.dashweb ? file.dashweb : {}) as Record<string, unknown>
 
   const backend = String(env.CLAUDEVR_BACKEND ?? file.backend ?? 'fake')
@@ -379,7 +377,6 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     host: env.CLAUDEVR_HOST ?? (file.host as string | undefined) ?? '0.0.0.0',
     port: int(env.CLAUDEVR_PORT ?? file.port, 8443, 'port'),
     allowIps: env.CLAUDEVR_ALLOW_IPS !== undefined ? list(env.CLAUDEVR_ALLOW_IPS) : list(file.allowIps),
-    autoPair: bool(env.CLAUDEVR_AUTO_PAIR ?? file.autoPair, false, 'autoPair'),
     stateDir,
     themesDir: env.CLAUDEVR_THEMES_DIR ? absolute(env.CLAUDEVR_THEMES_DIR, REPO_ROOT) : join(stateDir, 'themes'),
     clientDir: absolute(env.CLAUDEVR_CLIENT_DIR ?? 'client/dist', REPO_ROOT),

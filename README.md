@@ -55,7 +55,6 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `port` | `CLAUDEVR_PORT` | `8443` |
 | `host` | `CLAUDEVR_HOST` | `0.0.0.0` |
 | `allowIps` | `CLAUDEVR_ALLOW_IPS` (comma list) | none: loopback only |
-| `autoPair` (deprecated, see [autoPair](#autopair-deprecated)) | `CLAUDEVR_AUTO_PAIR` | `false` |
 | `sendsPerMinute`, `sendsPerHour` | `CLAUDEVR_SENDS_PER_MINUTE`, `CLAUDEVR_SENDS_PER_HOUR` | 6, 60 |
 | `dashweb.url` | `CLAUDEVR_DASHWEB_URL` | required for `dashweb` |
 | `dashweb.t3Bin` | `CLAUDEVR_T3_BIN` | required for `dashweb` |
@@ -289,11 +288,7 @@ A code is 6 characters from `ACDEFGHJKMNPQRTUVWXY34679` (no 0/O, 1/I/L, 2/Z, 5/S
 
 ### The legacy token
 
-Before pairing codes there was one token for every browser, in `.local/pairing-token`. It still works, so browsers paired with it carry on without pairing again. The approval page lists it with a Revoke button, which deletes the file and stops accepting it at once. A bridge with autoPair off never makes a new one, and no bridge prints it any more.
-
-### autoPair (deprecated)
-
-`autoPair: true` makes the bridge hand the legacy token to any allowed address that asks (`POST /api/pair`), and the pages pair themselves on first load with no code. With it on, the allow list is the only gate, so whoever holds an allowed IP can send. The bridge logs a warning at start-up while it is on, and revoking the legacy token then only rotates it, since the next browser that asks gets a new one. It goes before a public release. To use pairing codes only, set `"autoPair": false` in `.local/config.json` (and leave `CLAUDEVR_AUTO_PAIR` unset), then restart the bridge.
+Before pairing codes there was one token for every browser, in `.local/pairing-token`. It still works, so browsers paired with it carry on without pairing again. The approval page lists it with a Revoke button, which deletes the file and stops accepting it at once. The bridge never makes a new one, and prints it nowhere.
 
 ## Layout
 

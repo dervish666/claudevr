@@ -9,7 +9,7 @@
 
 import '../theme.css'
 import './probe.css'
-import { autoPair, checkToken, cleanToken, forgetToken, readToken, saveToken } from '../pairing.ts'
+import { checkToken, cleanToken, forgetToken, readToken, saveToken } from '../pairing.ts'
 
 type Status = 'yes' | 'no' | 'denied' | 'could-not-run' | 'needs-tap' | 'running'
 interface Result {
@@ -330,7 +330,7 @@ async function runChecks(gesture: boolean): Promise<void> {
 }
 
 async function send(phase: string): Promise<void> {
-  const token = readToken() ?? (await autoPair())
+  const token = readToken()
   if (!token) {
     post.className = 'post bad'
     post.textContent = 'NOT SENT: this browser is not paired yet. Pair it on the HUD page (/) with a code, or enter a token below.'
@@ -349,9 +349,6 @@ async function send(phase: string): Promise<void> {
     const r = await fetch('/api/probe', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
     if (r.status === 401) {
       forgetToken()
-      // The bridge may have made a new token; take it and try once more.
-      const fresh = await autoPair()
-      if (fresh && fresh !== token) return send(phase)
       post.className = 'post bad'
       post.textContent = "NOT SENT: the bridge refused this browser's token. Pair again on the HUD page (/), or enter a token below."
       pairForm.hidden = false

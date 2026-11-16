@@ -136,8 +136,6 @@ function render() {
   const { data, at } = last
   const now = Date.now()
 
-  $('autopair').hidden = !data.autoPair
-
   const waiting = data.waiting
   $('waiting-section').hidden = waiting.length === 0
   const wl = $('waiting')
@@ -179,7 +177,7 @@ function render() {
   const legacy = $('legacy')
   const text = document.createElement('span')
   if (data.legacy.active) {
-    text.textContent = 'Active. Browsers paired before pairing codes use it, and so does autoPair.'
+    text.textContent = 'Active. Browsers paired before pairing codes use it.'
     legacy.replaceChildren(text, revokeButton('legacy', 'the legacy token', () => revoke({ legacy: true }, 'the legacy token')))
   } else {
     text.className = 'muted'

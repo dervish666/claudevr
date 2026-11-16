@@ -168,46 +168,10 @@ test('a request target that is not a URL is answered 400, on HTTP and on the Web
   assert.equal((await call('GET', '/api/health', { token: TOKEN })).status, 200, 'still serving')
 })
 
-test('pair: off by default, so the token is never handed out', async () => {
+test('pair: POST /api/pair no longer exists, so no token is ever handed out', async () => {
   const r = await call('POST', '/api/pair')
-  assert.equal(r.status, 403)
+  assert.notEqual(r.status, 200)
   assert.equal(JSON.stringify(r.body).includes(TOKEN), false)
-})
-
-test('pair: with autoPair on, an allowed address gets a token that works; another origin does not', async () => {
-  const certs = makeCert(join(dir, 'certs-pair'), ['localhost', '127.0.0.1'])
-  const backend = FakeAdapter.fromFixtures(FIX, { pollMs: 50, log: () => {} })
-  const paired = createBridge({
-    backend,
-    token: TOKEN,
-    allowIps: [],
-    autoPair: true,
-    clientDir: join(dir, 'client'),
-    probeLog: join(dir, 'probe-pair.log'),
-    cert: readFileSync(certs.cert),
-    key: readFileSync(certs.key),
-    sendsPerMinute: 3,
-    sendsPerHour: 100,
-    log: () => {},
-  })
-  await new Promise<void>(ok => paired.server.listen(0, '127.0.0.1', ok))
-  const mainPort = port
-  port = (paired.server.address() as AddressInfo).port
-  try {
-    const got = await call('POST', '/api/pair')
-    assert.equal(got.status, 200)
-    assert.equal(got.body.token, TOKEN)
-    assert.equal((await call('GET', '/api/health', { token: got.body.token })).status, 200)
-    // Pairing does not open the rest of the API to a request with no token.
-    assert.equal((await call('GET', '/api/health')).status, 401)
-    const foreign = await call('POST', '/api/pair', { headers: { origin: 'https://evil.example' } })
-    assert.equal(foreign.status, 403)
-    assert.equal(JSON.stringify(foreign.body).includes(TOKEN), false)
-  } finally {
-    port = mainPort
-    await paired.close()
-    backend.close()
-  }
 })
 
 test('gate: a non-loopback address not on the list is refused, token or not', async t => {

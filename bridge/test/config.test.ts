@@ -42,6 +42,21 @@ test('voice settings default safely and read the file and environment', () => {
   }
 })
 
+test('autoPair was removed: a config file or environment that still names it stops the bridge', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'claudevr-cfg-'))
+  try {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoPair: true }))
+    assert.throws(() => loadConfig({ CLAUDEVR_STATE_DIR: dir }), /autoPair was removed: pairing is by code only/)
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoPair: false }))
+    assert.throws(() => loadConfig({ CLAUDEVR_STATE_DIR: dir }), /autoPair was removed/)
+    writeFileSync(join(dir, 'config.json'), '{}')
+    assert.throws(() => loadConfig({ CLAUDEVR_STATE_DIR: dir, CLAUDEVR_AUTO_PAIR: 'true' }), /CLAUDEVR_AUTO_PAIR was removed/)
+    assert.doesNotThrow(() => loadConfig({ CLAUDEVR_STATE_DIR: dir }))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('callsigns: an override or a heard-as that starts with a command, confirm or cancel word is refused, naming the key', () => {
   for (const [name, word] of [['Send', 'send'], ['Status Board', 'status'], ['Yes Man', 'yes'], ['Cancel', 'cancel'], ['Nope', 'nope'], ['Belay', 'belay'], ['Tell', 'tell'], ['Go Fish', 'go'], ['Never Land', 'never']] as const) {
     assert.throws(() => parseCallsigns({ 'my-project': name }), (e: Error) => e.message === `callsigns.my-project: the callsign ${JSON.stringify(name)} starts with "${word}", which the voice grammar hears as a command; pick a name that does not`, name)

@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process'
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { KeyedBudget, loadOrCreateToken, tokenMatches } from './gate.ts'
+import { KeyedBudget, tokenMatches } from './gate.ts'
 
 type Log = (...a: unknown[]) => void
 
@@ -261,14 +261,6 @@ export class DeviceStore {
     this.emitRevoke({ kind: 'legacy' })
     if (this.legacyFile) rmSync(this.legacyFile, { force: true })
     return true
-  }
-
-  /** The legacy token, made if there is none, since autoPair hands it out. */
-  ensureLegacy(): string {
-    if (this.legacy !== null) return this.legacy
-    if (this.legacyFile) this.legacy = loadOrCreateToken(this.legacyFile, this.log).token
-    else this.legacy = randomBytes(16).toString('hex')
-    return this.legacy
   }
 
   list(): Device[] {

@@ -1,6 +1,6 @@
 // This browser's token, kept in localStorage. Both pages share it (same
 // origin). It comes from the pairing handshake (a code shown here, typed on
-// the Mac), from autoPair, or typed by hand for recovery. A link ending in
+// the Mac), or typed by hand for recovery. A link ending in
 // #pair=<token> pairs without typing; the fragment never reaches the server
 // or its logs, and is removed at once.
 
@@ -71,32 +71,6 @@ function takeFromFragment(): void {
   if (!m) return
   saveToken(m[1]!.toLowerCase())
   history.replaceState(null, '', location.pathname + location.search)
-}
-
-/**
- * Asks the bridge for the token. It answers only when its autoPair setting is
- * on, and only to addresses it already allows. Null means "not this way":
- * the caller falls back to the typed token.
- */
-export async function autoPair(): Promise<string | null> {
-  try {
-    const r = await fetch('/api/pair', { method: 'POST', cache: 'no-store' })
-    if (r.status === 403) return null // auto-pairing is off on this bridge
-    if (!r.ok) {
-      console.error(`pairing: auto-pair answered HTTP ${r.status}`)
-      return null
-    }
-    const body = (await r.json()) as { token?: unknown }
-    if (typeof body.token !== 'string' || !body.token) {
-      console.error('pairing: auto-pair reply held no token')
-      return null
-    }
-    saveToken(body.token)
-    return body.token
-  } catch (err) {
-    console.error('pairing: auto-pair failed:', err)
-    return null
-  }
 }
 
 /**
