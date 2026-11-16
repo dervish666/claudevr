@@ -1,9 +1,13 @@
 // A small client for T3 Code's own MCP endpoint (POST <origin>/mcp, Streamable
 // HTTP: JSON-RPC over POST, each reply either JSON or a short event stream).
-// It exists for one call: t3_thread_send with mode "auto", which starts an
-// idle thread or goes straight into a running turn. The T3 CLI can only
-// queue. Written on fetch, not the MCP SDK: the handshake is three POSTs and
-// the bridge needs to know exactly when a request may have reached T3.
+// Written on fetch, not the MCP SDK: the handshake is three POSTs and the
+// bridge needs to know exactly when a request may have reached T3.
+//
+// It calls four tools and no others. One writes: t3_thread_send with mode
+// "auto", which starts an idle thread or goes straight into a running turn
+// (the T3 CLI can only queue). Three only read, for the t3 backend:
+// t3_thread_list, t3_thread_read and t3_project_list. A read that fails is
+// never reported as maybe delivered, since nothing it did can land twice.
 //
 // The bearer token comes from <state dir>/t3-link.json, made by
 // `npm run t3-link`. It goes in the Authorization header and nowhere else:
@@ -156,12 +160,22 @@ export interface T3SendResult {
   runId: string
 }
 
-type Phase = 'initialize' | 'call'
+/** initialize: the handshake. call: the send, which may land. read: a read-only tool, which cannot. */
+type Phase = 'initialize' | 'call' | 'read'
+
+/** The read-only tools, and the only ones `reads` can reach. */
+export const READ_TOOLS = ['t3_thread_list', 't3_thread_read', 't3_project_list'] as const
+export type ReadTool = (typeof READ_TOOLS)[number]
+
+/** Calls read-only tools inside one MCP session. Resolves the tool's JSON result. */
+export type ReadCall = (tool: ReadTool, args: Record<string, unknown>) => Promise<Record<string, unknown>>
 
 /** Connection errors that mean the request never left this machine. */
 const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'UND_ERR_CONNECT_TIMEOUT'])
 /** T3 failure codes that refuse the caller before anything is dispatched. */
 const DENIED = new Set(['capability_denied', 'runtime_mode_escalation_denied', 'interaction_mode_escalation_denied'])
+
+const PHASE_SAID: Record<Phase, string> = { initialize: 'the MCP handshake', call: 'the send', read: 'a read' }
 
 const causeCode = (err: unknown): string => {
   const c = (err as { cause?: { code?: unknown } } | null)?.cause?.code
@@ -198,10 +212,32 @@ export class T3Mcp {
 
   /**
    * Sends `text` to `threadId` with t3_thread_send, mode "auto", exactly as
-   * given. This is the only tool and the only mode this client calls.
+   * given. The only write this client makes, and the only mode it uses.
    */
   async send(threadId: string, text: string, clientRequestId: string): Promise<T3SendResult> {
     if (!THREAD_ID.test(threadId)) throw new T3McpError('tool', 'thread id is not one T3 can take')
+    return this.withSession(async session => {
+      const result = await session.request('tools/call', { name: 't3_thread_send', arguments: { threadId, message: text, mode: 'auto', clientRequestId } }, 'call', this.callTimeoutMs)
+      return readSendResult(result)
+    })
+  }
+
+  /**
+   * Runs `fn` with one MCP session that can call the read-only tools, and
+   * ends it afterwards: a poll making several reads pays one handshake. Every
+   * failure is a T3McpError with maybeDelivered false.
+   */
+  async reads<T>(fn: (call: ReadCall) => Promise<T>): Promise<T> {
+    return this.withSession(session =>
+      fn(async (tool, args) => {
+        if (!READ_TOOLS.includes(tool)) throw new T3McpError('tool', `${String(tool)} is not a read-only tool`)
+        return readToolResult(tool, await session.request('tools/call', { name: tool, arguments: args }, 'read', this.callTimeoutMs))
+      }),
+    )
+  }
+
+  /** The link, T3's origin, the handshake, `fn`, then the end of the session whatever happened. */
+  private async withSession<T>(fn: (session: Session) => Promise<T>): Promise<T> {
     const link = readLink(this.linkFile)
     if (!link) throw new T3McpError('not-linked', 'not linked to T3')
     if (linkExpired(link)) throw new T3McpError('expired', `the T3 link expired at ${link.expiresAt}`)
@@ -218,8 +254,7 @@ export class T3Mcp {
     try {
       await session.request('initialize', { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'claudevr-bridge', version: '0.1.0' } }, 'initialize', this.initTimeoutMs)
       await session.notify('notifications/initialized', this.initTimeoutMs)
-      const result = await session.request('tools/call', { name: 't3_thread_send', arguments: { threadId, message: text, mode: 'auto', clientRequestId } }, 'call', this.callTimeoutMs)
-      return readSendResult(result)
+      return await fn(session)
     } finally {
       session.end(END_TIMEOUT_MS).catch(err => this.log('could not end the MCP session:', (err as Error).message))
     }
@@ -260,8 +295,8 @@ class Session {
     } catch (err) {
       const e = err as Error
       const code = causeCode(err)
-      if (e.name === 'TimeoutError' || signal.aborted) throw new T3McpError('timeout', `T3 did not answer ${phase === 'call' ? 'the send' : 'the MCP handshake'} within ${timeoutMs / 1000} s`, phase === 'call')
-      if (phase === 'initialize' || NOT_SENT.has(code)) throw new T3McpError('unreachable', `cannot reach T3 at ${this.endpoint}: ${code || e.message}`)
+      if (e.name === 'TimeoutError' || signal.aborted) throw new T3McpError('timeout', `T3 did not answer ${PHASE_SAID[phase]} within ${timeoutMs / 1000} s`, phase === 'call')
+      if (phase !== 'call' || NOT_SENT.has(code)) throw new T3McpError('unreachable', `cannot reach T3 at ${this.endpoint}: ${code || e.message}`)
       // The connection broke after the request may have been written.
       throw new T3McpError('unknown', `the connection to T3 broke during the send: ${code || e.message}`, true)
     }
@@ -272,6 +307,7 @@ class Session {
     // 404 on a request that names a session means T3 dropped the session before acting on it.
     if (res.status === 404 && this.sessionId) throw new T3McpError('unreachable', 'T3 no longer knows this MCP session')
     if (res.status >= 500 && phase === 'call') throw new T3McpError('unknown', `T3 answered the send with HTTP ${res.status}`, true)
+    if (phase === 'read') throw new T3McpError('unreachable', `T3's MCP endpoint answered a read with HTTP ${res.status}`)
     // Before the send goes out, any other refusal only means MCP is not usable now.
     if (phase === 'initialize') throw new T3McpError('unreachable', `T3's MCP endpoint answered HTTP ${res.status}`)
     throw new T3McpError('tool', `T3's MCP endpoint answered HTTP ${res.status}`)
@@ -286,10 +322,12 @@ class Session {
     } catch (err) {
       const timedOut = (err as Error).name === 'TimeoutError' || signal.aborted
       if (phase === 'initialize') throw new T3McpError(timedOut ? 'timeout' : 'unreachable', `T3's MCP handshake failed: ${timedOut ? 'no answer in time' : (err as Error).message}`)
+      if (phase === 'read') throw new T3McpError(timedOut ? 'timeout' : 'unreachable', `T3's answer to a read ${timedOut ? 'did not arrive in time' : `could not be read: ${(err as Error).message}`}`)
       throw new T3McpError(timedOut ? 'timeout' : 'unknown', `T3 took the send but its answer ${timedOut ? 'did not arrive in time' : `could not be read: ${(err as Error).message}`}`, true)
     }
     if (!envelope) {
       if (phase === 'initialize') throw new T3McpError('unreachable', 'T3 sent no answer to the MCP handshake')
+      if (phase === 'read') throw new T3McpError('unreachable', 'T3 sent no answer to a read')
       throw new T3McpError('unknown', 'T3 took the send but gave no answer to it', true)
     }
     if (envelope.error !== undefined) {
@@ -376,26 +414,41 @@ async function readEventStream(res: Response, pick: (v: unknown) => Record<strin
   }
 }
 
-/** t3_thread_send's result: structuredContent, or the same JSON as text. Its failure is JSON text with code and message. */
-function readSendResult(result: unknown): T3SendResult {
+const asJson = (s: unknown): Record<string, unknown> | null => {
+  if (typeof s !== 'string') return null
+  try {
+    const v: unknown = JSON.parse(s)
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A tool's result: structuredContent, or the same JSON as text. A failure is
+ * JSON text with code and message; it throws, never as maybe delivered.
+ */
+function toolBody(result: unknown, what: string): Record<string, unknown> | null {
   const r = (result ?? {}) as { isError?: unknown; structuredContent?: unknown; content?: unknown }
   const textPart = Array.isArray(r.content) ? (r.content as Array<{ text?: unknown }>).find(p => typeof p?.text === 'string')?.text : undefined
-  const asJson = (s: unknown): Record<string, unknown> | null => {
-    if (typeof s !== 'string') return null
-    try {
-      const v: unknown = JSON.parse(s)
-      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null
-    } catch {
-      return null
-    }
-  }
   if (r.isError === true) {
     const f = asJson(textPart)
     const code = typeof f?.code === 'string' ? f.code : ''
     const message = (typeof f?.message === 'string' ? f.message : typeof textPart === 'string' ? textPart : 'no reason given').slice(0, 400)
-    throw new T3McpError(DENIED.has(code) ? 'denied' : 'tool', `T3 refused the send${code ? ` (${code})` : ''}: ${message}`)
+    throw new T3McpError(DENIED.has(code) ? 'denied' : 'tool', `T3 refused ${what}${code ? ` (${code})` : ''}: ${message}`)
   }
-  const body = (r.structuredContent && typeof r.structuredContent === 'object' ? r.structuredContent : asJson(textPart)) as { delivery?: unknown; runId?: unknown } | null
+  return r.structuredContent && typeof r.structuredContent === 'object' && !Array.isArray(r.structuredContent) ? (r.structuredContent as Record<string, unknown>) : asJson(textPart)
+}
+
+function readToolResult(tool: ReadTool, result: unknown): Record<string, unknown> {
+  const body = toolBody(result, tool)
+  if (!body) throw new T3McpError('tool', `${tool} answered with no JSON result`)
+  return body
+}
+
+/** t3_thread_send's result. */
+function readSendResult(result: unknown): T3SendResult {
+  const body = toolBody(result, 'the send') as { delivery?: unknown; runId?: unknown } | null
   const delivery = body?.delivery
   if (typeof delivery !== 'string' || !DELIVERIES.includes(delivery as Delivery)) throw new T3McpError('unknown', 'T3 accepted the send but its answer does not say how it was delivered', true)
   return { delivery: delivery as Delivery, runId: typeof body?.runId === 'string' ? body.runId : '' }

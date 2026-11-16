@@ -15,3 +15,6 @@ claudevr.local.json
 # editor and OS noise
 .DS_Store
 *.log
+
+# tool state
+.impeccable/

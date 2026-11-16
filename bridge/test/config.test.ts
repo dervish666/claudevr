@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig, parseCallsigns } from '../src/config.ts'
+import { DEFAULT_STT, loadConfig, parseCallsigns } from '../src/config.ts'
 
 test('callsigns: a plain string or an object with heardAs', () => {
   assert.deepEqual(parseCallsigns({ claudevr: { callsign: 'Claude', heardAs: ['Jose'] }, tally: 'Tally' }), [
@@ -20,7 +20,7 @@ test('voice settings default safely and read the file and environment', () => {
   const dir = mkdtempSync(join(tmpdir(), 'claudevr-cfg-'))
   try {
     const none = loadConfig({ CLAUDEVR_STATE_DIR: dir })
-    assert.equal(none.stt.provider, 'parakeet')
+    assert.equal(none.stt.provider, DEFAULT_STT)
     assert.match(none.stt.python, /\.local\/stt-venv\/bin\/python$/)
     assert.equal(none.stt.maxSeconds, 30)
     assert.deepEqual(none.callsigns, [])

@@ -32,6 +32,17 @@ export interface DashwebConfig {
   t3LinkFile?: string
 }
 
+/** The t3 backend: T3 Code alone, read and sent to over its MCP endpoint with the link. */
+export interface T3Config {
+  /** T3's home, where userdata/server-runtime.json names its origin. */
+  t3BaseDir: string
+  pollMs: number
+  /** t3.activeHours: a thread shows when it changed this recently, or is running or waiting now. */
+  activeHours: number
+  /** Where npm run t3-link keeps the link; nothing is read or sent without it. */
+  t3LinkFile: string
+}
+
 export interface SttConfig {
   /** "parakeet" (parakeet-mlx, Apple silicon), "whisper" (faster-whisper) or "off". */
   provider: 'parakeet' | 'whisper' | 'off'
@@ -77,9 +88,11 @@ export interface FrontManConfig {
 }
 
 const STT_MODELS = { parakeet: 'mlx-community/parakeet-tdt-0.6b-v3', whisper: 'small.en' }
+/** parakeet-mlx needs MLX, so Apple silicon; everything else gets faster-whisper. */
+export const DEFAULT_STT: 'parakeet' | 'whisper' = process.platform === 'darwin' && process.arch === 'arm64' ? 'parakeet' : 'whisper'
 
 export interface Config {
-  backend: 'fake' | 'dashweb'
+  backend: 'fake' | 'dashweb' | 't3'
   host: string
   port: number
   /** Client IPs allowed besides loopback. */
@@ -102,6 +115,7 @@ export interface Config {
   sendsPerMinute: number
   sendsPerHour: number
   dashweb: DashwebConfig | null
+  t3: T3Config | null
   stt: SttConfig
   tts: TtsConfig
   ffmpeg: string
@@ -162,8 +176,8 @@ function int(v: unknown, fallback: number, name: string): number {
  * make every HUD reconnect over and over.
  */
 export const MAX_POLL_MS = 10_000
-function pollMs(n: number): number {
-  if (n > MAX_POLL_MS) throw new Error(`dashweb.pollMs: at most ${MAX_POLL_MS} ms, got ${n}; every poll is what keeps the HUD's link alive, and a HUD drops a link that is silent for 15 s`)
+function pollMs(n: number, name = 'dashweb.pollMs'): number {
+  if (n > MAX_POLL_MS) throw new Error(`${name}: at most ${MAX_POLL_MS} ms, got ${n}; every poll is what keeps the HUD's link alive, and a HUD drops a link that is silent for 15 s`)
   return n
 }
 
@@ -290,7 +304,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
   const fileDash = (typeof file.dashweb === 'object' && file.dashweb ? file.dashweb : {}) as Record<string, unknown>
 
   const backend = String(env.CLAUDEVR_BACKEND ?? file.backend ?? 'fake')
-  if (backend !== 'fake' && backend !== 'dashweb') throw new Error(`backend must be "fake" or "dashweb", got "${backend}"`)
+  if (backend !== 'fake' && backend !== 'dashweb' && backend !== 't3') throw new Error(`backend must be "fake", "dashweb" or "t3", got "${backend}"`)
 
   let dashweb: DashwebConfig | null = null
   if (backend === 'dashweb') {
@@ -310,9 +324,20 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     }
   }
 
+  let t3: T3Config | null = null
+  if (backend === 't3') {
+    const fileT3 = obj(file.t3)
+    t3 = {
+      t3BaseDir: absolute(String(env.CLAUDEVR_T3_BASE_DIR ?? fileT3.baseDir ?? '~/.t3'), REPO_ROOT),
+      pollMs: pollMs(int(env.CLAUDEVR_T3_POLL_MS ?? fileT3.pollMs, 2000, 't3.pollMs'), 't3.pollMs'),
+      activeHours: int(env.CLAUDEVR_T3_ACTIVE_HOURS ?? fileT3.activeHours, 24, 't3.activeHours'),
+      t3LinkFile: join(stateDir, 't3-link.json'),
+    }
+  }
+
   const fileStt = obj(file.stt)
   const fileTts = obj(file.tts)
-  const sttProvider = oneOf(env.CLAUDEVR_STT ?? fileStt.provider, ['parakeet', 'whisper', 'off'] as const, 'parakeet', 'stt.provider')
+  const sttProvider = oneOf(env.CLAUDEVR_STT ?? fileStt.provider, ['parakeet', 'whisper', 'off'] as const, DEFAULT_STT, 'stt.provider')
   const sttCache = env.CLAUDEVR_STT_CACHE ?? (fileStt.cacheDir as string | undefined)
   // Tools, not state: the venv and the weights stay in the repo's .local/
   // whatever CLAUDEVR_STATE_DIR says, so a test bridge shares them.
@@ -364,6 +389,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     sendsPerMinute: int(env.CLAUDEVR_SENDS_PER_MINUTE ?? file.sendsPerMinute, 6, 'sendsPerMinute'),
     sendsPerHour: int(env.CLAUDEVR_SENDS_PER_HOUR ?? file.sendsPerHour, 60, 'sendsPerHour'),
     dashweb,
+    t3,
     stt,
     tts,
     ffmpeg: String(env.CLAUDEVR_FFMPEG ?? file.ffmpeg ?? 'ffmpeg'),

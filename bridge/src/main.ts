@@ -8,6 +8,7 @@ import { DeviceStore, notifyMac, PairingRequests } from './pairing.ts'
 import { createBridge } from './server.ts'
 import { DashwebAdapter } from './backend/dashweb/adapter.ts'
 import { FakeAdapter } from './backend/fake.ts'
+import { T3Adapter } from './backend/t3/adapter.ts'
 import type { SessionBackend } from './backend/types.ts'
 import { HelperStt, NoStt, type SttProvider } from './voice/stt.ts'
 import { FishTts, NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
@@ -29,7 +30,10 @@ function main(): void {
 
   let backend: SessionBackend
   if (cfg.backend === 'dashweb' && cfg.dashweb) backend = new DashwebAdapter(cfg.dashweb)
-  else {
+  else if (cfg.backend === 't3' && cfg.t3) {
+    backend = new T3Adapter(cfg.t3, { log: (...a) => log('[t3]', ...a) })
+    log(`t3 backend: ${cfg.t3.t3BaseDir}, threads changed in the last ${cfg.t3.activeHours} h, polled every ${cfg.t3.pollMs} ms`)
+  } else {
     const fake = FakeAdapter.fromFixtures(cfg.fixturesDir, { file: cfg.fakeFleet })
     if (cfg.fakeLiveMs > 0) fake.startLive(cfg.fakeLiveMs)
     log(`fake backend: ${cfg.fakeFleet}${cfg.fakeLiveMs > 0 ? `, a demo change every ${cfg.fakeLiveMs} ms` : ''}`)

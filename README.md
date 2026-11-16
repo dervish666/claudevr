@@ -6,6 +6,18 @@ A HUD for running Claude sessions, opened in a headset's browser. The page talks
 
 Created in [T3 Code](https://t3.codes).
 
+## Quickstart
+
+You need Node 22.18 or later, [T3 Code](https://t3.codes) running on this machine, and a headset (or any browser) on the same network.
+
+1. `npm install`, then `npm run demo`. Open `https://localhost:8443/`, accept the certificate warning, and approve the code it shows at `https://localhost:8443/pair`. You get the HUD against a made-up fleet.
+2. `mkdir -p .local && cp config.example.json .local/config.json`, then trim it. It starts on the `t3` backend; put your headset's address in `allowIps`.
+3. `npm run t3-link`, and pick "Full access" on the page T3 opens. That link is how the bridge reads your threads and sends to them.
+4. `npm start`. On the headset, open `https://<this machine's LAN IP>:8443/`, accept the warning, and approve its code at `/pair` on this machine as before.
+5. Optional, for voice: `npm run stt:setup` (needs `uv` and `ffmpeg`; parakeet on Apple silicon, faster-whisper elsewhere).
+
+Spoken replies use macOS `say` or [fish.audio](https://fish.audio); on other systems they are off until you set `tts.provider`. Character mode needs the `claude` CLI signed in.
+
 ## Run it
 
 Node 22.18 or later (the bridge runs its TypeScript directly).
@@ -31,7 +43,7 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 
 | Setting | Environment | Default |
 |---|---|---|
-| `backend` | `CLAUDEVR_BACKEND` | `fake` |
+| `backend` | `CLAUDEVR_BACKEND` | `fake`; or `t3` (T3 Code alone), `dashweb` |
 | `port` | `CLAUDEVR_PORT` | `8443` |
 | `host` | `CLAUDEVR_HOST` | `0.0.0.0` |
 | `allowIps` | `CLAUDEVR_ALLOW_IPS` (comma list) | none: loopback only |
@@ -42,6 +54,9 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `dashweb.t3BaseDir` | `CLAUDEVR_T3_BASE_DIR` | required for `dashweb` |
 | `t3.delivery` | `CLAUDEVR_T3_DELIVERY` | `auto` (used when a T3 link exists); or `queue` |
 | `dashweb.pollMs` | `CLAUDEVR_DASHWEB_POLL_MS` | 2000, at most 10000: each poll is what keeps the HUD's link alive, and the HUD drops a socket that has heard nothing for 15 s |
+| `t3.baseDir` | `CLAUDEVR_T3_BASE_DIR` | `~/.t3`, for the `t3` backend |
+| `t3.pollMs` | `CLAUDEVR_T3_POLL_MS` | 2000, at most 10000, for the same reason as `dashweb.pollMs` |
+| `t3.activeHours` | `CLAUDEVR_T3_ACTIVE_HOURS` | 24: a thread shows when it changed this recently, or is running or waiting now |
 | state directory | `CLAUDEVR_STATE_DIR` | `.local` |
 | config file | `CLAUDEVR_CONFIG` | `config.json` in the state directory |
 | `stt.cacheDir` | `CLAUDEVR_STT_CACHE` | `.local/models` for parakeet; the model's own cache for whisper |
@@ -72,6 +87,14 @@ Each session carries its sub-agents, trimmed by the bridge: running first, then 
 
 The dashweb backend reads everything under `dashweb.url`: `GET /api/board` and `GET /api/t3` for the fleet, `GET /api/state/office` for the usage limits and each session's context, and it holds `GET /api/sub/office` open for today's spend. It never posts to dashweb.
 
+### T3 backend
+
+Set `backend` to `t3` and the bridge needs nothing but T3 Code and the link from `npm run t3-link` (see below). It reads the fleet over T3's own MCP endpoint every `t3.pollMs`: `t3_thread_list` for the threads, `t3_project_list` for project names (kept for a minute), and `t3_thread_read` for the latest messages of at most four running or waiting threads per poll, each re-read no more than every 10 s. One MCP session carries a whole poll. Sends go through `t3_thread_send` in `auto` mode, as with dashweb, under the same rules: a recent good read, at most 4000 characters, and a send that may have landed is reported as unknown and never retried.
+
+Each top-level thread is a session; a thread T3 marks as a sub-agent shows among its parent's agents, however deep it sits. Threads that are settled or snoozed stay off the HUD, and so does anything quiet for longer than `t3.activeHours`, unless it is running or waiting. A waiting thread reads as asking and goes in the needs-you queue, with its last line as the question; a failed one goes there too. T3 reports no spend, usage limits or context use, so the HUD shows those as unavailable. Interrupting, approving and answering a request are not supported yet.
+
+Without a usable link the fleet read fails and the HUD shows why, with the fix: run `npm run t3-link`. There is no CLI fallback on this backend.
+
 ### Sending like a typed message
 
 The T3 CLI only queues: a busy thread gets a spoken message as its next turn. Link the bridge to T3 Code once and sends go through T3's own MCP endpoint in `auto` mode instead, which starts an idle thread or goes straight into a running turn:
@@ -82,7 +105,7 @@ npm run t3-link -- --status  # whether a link exists, when it was made and when 
 npm run t3-link -- --unlink  # delete it
 ```
 
-The approval page sets the link's access level. Pick **Full access**: T3 refuses a link to send to a thread that runs in a broader mode than the link's, and the other levels are all narrower than a full-access thread. If the page asks for a pairing code, make one in T3 Code's settings at the Full access level. The bridge only ever calls `t3_thread_send` with `mode: "auto"`.
+The approval page sets the link's access level. Pick **Full access**: T3 refuses a link to send to a thread that runs in a broader mode than the link's, and the other levels are all narrower than a full-access thread. If the page asks for a pairing code, make one in T3 Code's settings at the Full access level. The only write the bridge makes is `t3_thread_send` with `mode: "auto"`; the `t3` backend also calls `t3_thread_list`, `t3_thread_read` and `t3_project_list`, which only read.
 
 The token is kept in `.local/t3-link.json`, readable by you only, and never printed, logged or shown on the HUD. T3 gives it about 30 days and offers no refresh, so link again when the HUD says the link expired. No restart is needed: the bridge reads the file on every send.
 
@@ -266,7 +289,7 @@ Before pairing codes there was one token for every browser, in `.local/pairing-t
 
 ## Layout
 
-- `bridge/` HTTPS server (`src/server.ts`: routes and the gate's `authorise`; `src/send-ledger.ts`: request ids and remembered send outcomes; `src/ws-hub.ts`: WebSocket caps, presence, heartbeat and broadcast), gate, pairing (`src/pairing.ts`: devices, codes and the legacy token; `pair/`: the approval page, read from disk on each request), certificate, backends (`backend/dashweb`: the board normaliser, `usage.ts` for limits and context, `stream.ts` for the live spend; `backend/fake.ts`), voice (`src/voice/`: grammar, ffmpeg decode, speech-to-text and text-to-speech providers; `stt/helper.py`), character mode (`src/persona/`: `frontman.ts` the provider, `prompt.ts` the prompts and the validation, `persona.ts` lines, classification and speaking up)
+- `bridge/` HTTPS server (`src/server.ts`: routes and the gate's `authorise`; `src/send-ledger.ts`: request ids and remembered send outcomes; `src/ws-hub.ts`: WebSocket caps, presence, heartbeat and broadcast), gate, pairing (`src/pairing.ts`: devices, codes and the legacy token; `pair/`: the approval page, read from disk on each request), certificate, backends (`backend/dashweb`: the board normaliser, `usage.ts` for limits and context, `stream.ts` for the live spend; `backend/t3`: T3 Code alone over its MCP tools; `backend/t3mcp.ts`: the MCP client; `backend/fake.ts`), voice (`src/voice/`: grammar, ffmpeg decode, speech-to-text and text-to-speech providers; `stt/helper.py`), character mode (`src/persona/`: `frontman.ts` the provider, `prompt.ts` the prompts and the validation, `persona.ts` lines, classification and speaking up)
 - `client/` Vite and React: the HUD (`/`) with its link to the bridge (`src/hud/link.ts`, reconnect and the 15 s silence check) and its voice dock (`src/hud/Voice.tsx`, `src/hud/dock.ts` the answer block's rules, `src/hud/voice/`: `sendcard.ts` the card and countdown, `route.ts` what each answer does, `keys.ts` the desktop keys, `take.ts` one recording at a time), instrument mode (`src/instrument/`: `layout.ts` and `cards.ts` pure, `linework.tsx` the batch), and the headset probe (`/probe`)
 - `shared/protocol.ts` the normalised session shape, the usage figures and the WebSocket messages
 - `fixtures/` a scrubbed dashweb capture for tests, and demo fleets for the fake backend (`demo-fleet.json`, and `demo-fleet-10.json` with ten sessions and five needs)

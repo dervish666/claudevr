@@ -1,16 +1,16 @@
 // npm run stt:setup: the speech-to-text helper's Python, in the repo's
 // ignored .local/ (nothing installed globally), and the model weights.
 //
-//   node scripts/setup-stt.mjs            parakeet-mlx (Apple silicon), the default
-//   node scripts/setup-stt.mjs whisper    faster-whisper, the fallback
+//   node scripts/setup-stt.mjs            parakeet-mlx on Apple silicon, faster-whisper elsewhere
+//   node scripts/setup-stt.mjs whisper    faster-whisper, whatever the machine
 //
 // Needs uv (https://docs.astral.sh/uv/) and ffmpeg on the PATH.
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { REPO_ROOT } from '../bridge/src/config.ts'
+import { DEFAULT_STT, REPO_ROOT } from '../bridge/src/config.ts'
 
-const engine = process.argv[2] ?? 'parakeet'
+const engine = process.argv[2] ?? DEFAULT_STT
 if (!['parakeet', 'whisper'].includes(engine)) {
   console.error(`engine must be parakeet or whisper, got ${engine}`)
   process.exit(2)
@@ -46,4 +46,4 @@ const code =
     ? `from parakeet_mlx import from_pretrained; from_pretrained(${JSON.stringify(model)}, cache_dir=${JSON.stringify(cache)}); print("model ready")`
     : `from faster_whisper import WhisperModel; WhisperModel(${JSON.stringify(model)}, device="cpu", compute_type="int8"); print("model ready")`
 run(python, ['-c', code])
-console.log(`\nDone. The bridge finds ${python} by default${engine === 'whisper' ? '; set "stt": { "provider": "whisper" } in .local/config.json to use it' : ''}.`)
+console.log(`\nDone. The bridge finds ${python} by default${engine !== DEFAULT_STT ? `; set "stt": { "provider": "${engine}" } in .local/config.json to use it` : ''}.`)

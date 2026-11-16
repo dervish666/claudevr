@@ -26,7 +26,7 @@ import { readT3Origin, T3Mcp, T3McpError, type Delivery } from '../t3mcp.ts'
 export type T3Sender = Pick<T3Mcp, 'send' | 'linkState'>
 
 /** What the HUD shows for each way T3 took a message. */
-const DELIVERY_SAID: Record<Delivery, string> = {
+export const DELIVERY_SAID: Record<Delivery, string> = {
   started: 'Started.',
   steered: 'Went straight in.',
   queued: 'Queued behind the current turn.',
