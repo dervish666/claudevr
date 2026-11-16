@@ -6,6 +6,14 @@ A HUD for running Claude sessions, opened in a headset's browser. The page talks
 
 Created in [T3 Code](https://t3.codes).
 
+![Instrument mode: session tiles around the dispatcher's stream, with the needs-you queue above](docs/screenshots/instrument-preview.png)
+
+| Fleet | Reader | Send card |
+|---|---|---|
+| ![The 2D HUD: usage limits, needs-you queue and session cards](docs/screenshots/hud-fleet.png) | ![One session's turns in full](docs/screenshots/hud-reader.png) | ![A typed message to Quill counting down before it sends](docs/screenshots/hud-sendcard.png) |
+
+The screenshots use the demo fleet (`npm run demo`), not real sessions.
+
 ## Quickstart
 
 You need Node 22.18 or later, [T3 Code](https://t3.codes) running on this machine, and a headset (or any browser) on the same network.

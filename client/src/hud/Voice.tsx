@@ -289,7 +289,7 @@ function TypeInstead({ v }: { v: Voice }) {
         autoCapitalize="off"
         spellCheck={false}
         enterKeyHint="send"
-        placeholder="tell Tally run the tests"
+        placeholder="tell Harbour run the tests"
         aria-describedby="voice-type-hint"
       />
       <button type="submit" className="big" disabled={!text.trim() || v.textPending}>
