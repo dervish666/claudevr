@@ -1,7 +1,8 @@
 // The settings panel: low, to the right, tilted up like a desk strip, with
 // big labelled buttons. Sam operates it without a manual, so every toggle
 // names itself and shows which option is on. MINIMISE folds it to a strip
-// that keeps only the way back and the way out.
+// that keeps the way back, the mute and the way out: a chatty character
+// mid-call should not mean leaving the session.
 
 import { memo } from 'react'
 import { Container } from '@react-three/uikit'
@@ -15,7 +16,20 @@ const MM = 0.001
 
 function Option<K extends keyof Settings>({ k, value, label }: { k: K; value: Settings[K]; label: string }) {
   const s = useSettings()
-  const on = s[k] === value
+  return (
+    <Choice
+      label={label}
+      on={s[k] === value}
+      onPick={() => {
+        setSetting(k, value)
+        log('toggle', { [k]: value, settings: { ...s, [k]: value } })
+      }}
+    />
+  )
+}
+
+/** One option of a row: lit when it is the one on; a press on the lit one does nothing. */
+function Choice({ label, on, onPick }: { label: string; on: boolean; onPick: () => void }) {
   return (
     <Container
       flexGrow={1}
@@ -29,9 +43,7 @@ function Option<K extends keyof Settings>({ k, value, label }: { k: K; value: Se
       alignItems="center"
       onClick={e => {
         e.stopPropagation()
-        if (on) return
-        setSetting(k, value)
-        log('toggle', { [k]: value, settings: { ...s, [k]: value } })
+        if (!on) onPick()
       }}
     >
       <Text fontFamily="rajdhani" fontWeight="bold" fontSize={24} color={on ? C.white : C.muted}>
@@ -82,17 +94,24 @@ export interface ControlsProps {
   perf: Signal<string>
   mic: Signal<string>
   preview: boolean
+  /** Voice out muted: the character's lines and replies stay silent. The same switch as the 2D dock's. */
+  muted: boolean
+  onToggleMute: () => void
   onRecenter: () => void
   onFakeNeed: () => void
   onExit: () => void
 }
 
 /** Memoised: the callbacks it is handed are stable, so it renders again only when a toggle or the stream note changes. */
-export const Controls = memo(function Controls({ streamNote, perf, mic, preview, onRecenter, onFakeNeed, onExit }: ControlsProps) {
+export const Controls = memo(function Controls({ streamNote, perf, mic, preview, muted, onToggleMute, onRecenter, onFakeNeed, onExit }: ControlsProps) {
   const minimised = useSettings().minimised
   const fold = (to: boolean) => {
     setSetting('minimised', to)
     log('toggle', { minimised: to })
+  }
+  const mute = () => {
+    log('toggle', { muted: !muted })
+    onToggleMute()
   }
   // Folded: a strip where the panel's top edge was. The two forms are separate
   // roots (the key), because uikit leaves stray text behind when children come
@@ -100,8 +119,10 @@ export const Controls = memo(function Controls({ streamNote, perf, mic, preview,
   if (minimised) {
     return (
       <group position={[0.5, -0.5, -0.78]} rotation={[-38 * DEG, -30 * DEG, 0, 'YXZ']}>
-        <Container key="folded" pixelSize={MM} fontFamilies={FONTS} flexDirection="row" gap={8} width={330} padding={10} borderRadius={corner(10)} borderWidth={weight(2)} borderColor={C.cyanDim} backgroundColor={plateOf('card', 0.94)}>
+        <Container key="folded" pixelSize={MM} fontFamilies={FONTS} flexDirection="row" gap={8} width={480} padding={10} borderRadius={corner(10)} borderWidth={weight(2)} borderColor={C.cyanDim} backgroundColor={plateOf('card', 0.94)}>
           <Action label="SETTINGS" colour={C.cyan} onClick={() => fold(false)} />
+          {/* Names the state it is in, as the 2D dock's button does; a press flips it. */}
+          <Action label={muted ? 'MUTED' : 'SOUND ON'} colour={muted ? C.amber : C.cyan} onClick={mute} />
           <Action label={preview ? 'BACK TO 2D' : 'EXIT'} colour={C.red} onClick={onExit} />
         </Container>
       </group>
@@ -159,6 +180,10 @@ export const Controls = memo(function Controls({ streamNote, perf, mic, preview,
         <Row title="PLATE">
           <Option k="plate" value={0.92} label="92%" />
           <Option k="plate" value={0.7} label="70%" />
+        </Row>
+        <Row title="VOICE">
+          <Choice label="SOUND ON" on={!muted} onPick={mute} />
+          <Choice label="MUTED" on={muted} onPick={mute} />
         </Row>
         <Container flexDirection="row" gap={8} marginTop={4}>
           <Action label="RECENTER" colour={C.cyan} onClick={onRecenter} />

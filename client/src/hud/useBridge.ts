@@ -1,10 +1,12 @@
 // The HUD's line to the bridge: one WebSocket, reconnecting, and a clear
 // record of what is known and how old it is, so the page never passes off
-// stale data as a quiet fleet.
+// stale data as a quiet fleet. When to reconnect, and when a quiet socket is
+// given up on, is decided in link.ts, which has its own tests.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BackendStatus, BuildInfo, ClientMessage, Conversation, Fleet, ServerMessage, SpokenLine, VoiceStatus } from '../../../shared/protocol.ts'
 import { checkToken } from '../pairing.ts'
+import { BridgeLink, SILENCE_MS } from './link.ts'
 
 export type Link = 'connecting' | 'open' | 'down' | 'unauthorized'
 
@@ -55,7 +57,6 @@ function checkBuild(b: BuildInfo): void {
 
 export function useBridge(token: string): BridgeState {
   const [state, setState] = useState<Omit<BridgeState, 'post'>>(INITIAL)
-  const retry = useRef(0)
   const sock = useRef<WebSocket | null>(null)
   // The last presence sent, repeated on every new connection.
   const lastPresence = useRef<ClientMessage | null>(null)
@@ -66,33 +67,22 @@ export function useBridge(token: string): BridgeState {
   }, [])
 
   useEffect(() => {
-    let ws: WebSocket | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let stopped = false
-
-    const connect = () => {
-      setState(s => ({ ...s, link: s.link === 'open' ? 'connecting' : s.link === 'down' ? 'down' : 'connecting' }))
-      const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
-      let opened = false
-      try {
-        ws = new WebSocket(url, ['claudevr', `token.${token}`])
-      } catch (err) {
-        console.error('hud: WebSocket failed to start:', err)
-        setState(s => ({ ...s, link: 'down', linkError: String(err), downSince: s.downSince ?? Date.now() }))
-        schedule()
-        return
-      }
-      sock.current = ws
-      ws.onopen = () => {
-        opened = true
-        retry.current = 0
-        if (lastPresence.current) ws?.send(JSON.stringify(lastPresence.current))
+    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+    const link = new BridgeLink<WebSocket>({
+      open: () => new WebSocket(url, ['claudevr', `token.${token}`]),
+      now: () => Date.now(),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: h => clearTimeout(h as ReturnType<typeof setTimeout>),
+      onConnecting: () => setState(s => ({ ...s, link: s.link === 'down' ? 'down' : 'connecting' })),
+      onOpen: ws => {
+        sock.current = ws
+        if (lastPresence.current) ws.send(JSON.stringify(lastPresence.current))
         setState(s => ({ ...s, link: 'open', linkError: null, downSince: null, heardAt: Date.now() }))
-      }
-      ws.onmessage = e => {
+      },
+      onMessage: data => {
         let m: ServerMessage
         try {
-          m = JSON.parse(String(e.data)) as ServerMessage
+          m = JSON.parse(String(data)) as ServerMessage
         } catch (err) {
           console.error('hud: unreadable message from the bridge:', err)
           return
@@ -109,33 +99,35 @@ export function useBridge(token: string): BridgeState {
           announce: m.type === 'line' ? m.line : s.announce,
           conversation: m.type === 'conversation' ? m.conversation : s.conversation,
         }))
-      }
-      ws.onclose = async ev => {
-        if (stopped) return
+      },
+      onDown: async d => {
+        sock.current = null
+        if (d.kind === 'unstarted') {
+          setState(s => ({ ...s, link: 'down', linkError: d.error, downSince: s.downSince ?? Date.now() }))
+          return 'retry'
+        }
+        if (d.kind === 'silent') {
+          console.warn(`hud: nothing from the bridge in ${Math.round(d.quietMs / 1000)} s; dropped the socket and reconnecting`)
+          setState(s => ({ ...s, link: 'down', linkError: `no word from the bridge in ${Math.round(SILENCE_MS / 1000)} s, reconnecting`, downSince: Date.now() }))
+          return 'retry'
+        }
         // A browser hides the HTTP status of a refused upgrade. Ask the API,
         // which answers 401 for a bad token, so the page can say which it is.
-        if (!opened) {
+        if (!d.opened) {
           const h = await checkToken(token)
           if (!h.ok && h.status === 401) {
             setState(s => ({ ...s, link: 'unauthorized', linkError: h.error }))
-            return
+            return 'stop'
           }
-          setState(s => ({ ...s, link: 'down', linkError: h.ok ? `WebSocket refused (code ${ev.code})` : h.error, downSince: s.downSince ?? Date.now() }))
-        } else setState(s => ({ ...s, link: 'down', linkError: `connection closed (code ${ev.code})`, downSince: Date.now() }))
-        schedule()
-      }
-    }
-    const schedule = () => {
-      if (stopped) return
-      const ms = Math.min(10_000, 500 * 2 ** retry.current++)
-      timer = setTimeout(connect, ms)
-    }
-
-    connect()
+          setState(s => ({ ...s, link: 'down', linkError: h.ok ? `WebSocket refused (code ${d.code})` : h.error, downSince: s.downSince ?? Date.now() }))
+        } else setState(s => ({ ...s, link: 'down', linkError: `connection closed (code ${d.code})`, downSince: Date.now() }))
+        return 'retry'
+      },
+    })
+    link.start()
     return () => {
-      stopped = true
-      if (timer) clearTimeout(timer)
-      ws?.close()
+      sock.current = null
+      link.stop()
     }
   }, [token])
 

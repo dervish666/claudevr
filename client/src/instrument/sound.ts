@@ -1,5 +1,5 @@
 // Sound for instrument mode: short synthesised blips for listen start,
-// listen stop and send; a positional chime from a tile's direction; and the
+// listen stop, a card arming and send; a positional chime from a tile's direction; and the
 // spoken reply routed through a panner at the iris. Everything runs on the
 // page's one AudioContext (hud/voice/audio-context.ts), unlocked by the
 // Enter press.
@@ -42,6 +42,16 @@ function tone(freqs: [number, number], ms: number, gain = 0.12, at = 0): void {
 export const blips = {
   listenStart: () => tone([700, 1150], 70),
   listenStop: () => tone([1150, 620], 80),
+  /**
+   * A card armed and is counting down: two short pips on one pitch, so a card
+   * armed by words he did not mean for it is heard even when he is looking
+   * elsewhere. Unlike the others it neither slides nor climbs. The 2D page's
+   * hud/voice/blip.ts plays the same idea.
+   */
+  armed: () => {
+    tone([880, 880], 45, 0.11)
+    tone([880, 880], 45, 0.11, 0.09)
+  },
   send: () => {
     tone([660, 660], 70, 0.1)
     tone([990, 990], 110, 0.1, 0.08)

@@ -21,6 +21,7 @@ import { arcGeometry, arcsGeometry, ticksGeometry, useGeometry } from './shapes.
 import { settings } from './settings.ts'
 import { RADIUS, STREAM_HEIGHT_M } from './Stream.tsx'
 import { CoreFace, FaceLabel, coreFace, faceBox, ringsShown } from './themes/faces.tsx'
+import { countdownLeft, countdownLine, countdownStep } from './sendcue.ts'
 import { fit } from './text.ts'
 import { C, DEG, FONTS, T, X, characterAccent, corner, levelColour, plateOf, rgba, shade, weight } from './theme.ts'
 
@@ -320,8 +321,9 @@ export const VoiceArc = memo(function VoiceArc({ voice, level }: { voice: Voice;
         const sweep = (Math.sin(now / 160) + 1) / 2
         c = Math.abs(i / (CELLS - 1) - sweep) < 0.06 ? AMBER : DIM
       } else if (card?.state === 'armed') {
-        const left = Math.max(0, Math.min(1, (card.sendAt - Date.now()) / card.countdownMs))
-        c = d <= left ? AMBER : DIM
+        // A held card has no countdown to drain: the whole arc blinks slowly, waiting on him.
+        const left = countdownLeft(card, Date.now())
+        c = left === null ? (Math.sin(now / 320) > -0.4 ? AMBER : DIM) : d <= left ? AMBER : DIM
       } else if (card?.state === 'sending') {
         c = Math.sin(now / 90) > 0 ? AMBER : DIM
       } else if (v.phase.kind === 'failed') {
@@ -511,10 +513,10 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   useFrame(() => {
     const c = cardRef.current
     if (c?.state !== 'armed') return
-    const n = talking ? -1 : Math.max(0, Math.ceil((c.sendAt - Date.now()) / 1000))
+    const n = countdownStep(c, talking, Date.now())
     if (n === shown.current) return
     shown.current = n
-    countdown.value = n < 0 ? 'PAUSED WHILE YOU TALK' : `SENDS IN ${n}`
+    countdown.value = countdownLine(n)
   })
   if (!card && !which) return null
   const z = -RADIUS + 0.12
@@ -542,10 +544,13 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   }
   const c = card!
   const armed = c.state === 'armed'
+  // Held: armed with no countdown. Its own root (the key), since its pause line takes a row of its own.
+  const held = armed && c.held
   const border = c.state === 'sent' ? C.green : c.state === 'refused' || c.state === 'limited' || c.state === 'unknown' ? C.red : c.state === 'cancelled' ? C.muted : C.amber
   const stateWord = c.state === 'sending' ? 'SENDING…' : c.state === 'unknown' ? 'OUTCOME UNKNOWN' : c.state.toUpperCase()
   // A quick send that failed, or whose outcome is unknown, gets the full card: the slim line has no room for why.
-  if (c.quick && c.state !== 'refused' && c.state !== 'limited' && c.state !== 'unknown') {
+  // So does a held one, which waits for Send, and the slim line has no Send button.
+  if (c.quick && !c.held && c.state !== 'refused' && c.state !== 'limited' && c.state !== 'unknown') {
     // Character mode's quick send: one slim line, still cancellable by button or by voice. The card is quick only when
     // the whole message fits here (QUICK_MAX_CHARS), so the text is never cut.
     return (
@@ -578,7 +583,7 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
   }
   return (
     <group position={[0, CORE_Y - 0.1, z]}>
-      <Container key={`card:${c.id}:${c.state}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={corner(10)} borderWidth={weight(3)} borderColor={border} backgroundColor={plateOf('card', 0.96)}>
+      <Container key={`card:${c.id}:${c.state}${held ? ':held' : ''}`} pixelSize={MM} fontFamilies={FONTS} flexDirection="column" gap={10} width={640} padding={18} borderRadius={corner(10)} borderWidth={weight(3)} borderColor={border} backgroundColor={plateOf('card', 0.96)}>
         <Container flexDirection="row" alignItems="center" gap={12}>
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={24} color={C.muted}>
             TO
@@ -596,7 +601,17 @@ export const CardView = memo(function CardView({ voice, voiceRef, fleetIds }: { 
             {fit(c.text)}
           </Text>
         </Container>
-        {armed ? (
+        {held ? (
+          <Container flexDirection="column" gap={10}>
+            <Container flexDirection="row" alignItems="center" gap={16}>
+              <Button label="SEND NOW" colour={C.green} onClick={() => void voiceRef.current.send()} />
+              <Button label="CANCEL" colour={C.red} onClick={() => voiceRef.current.cancel('Cancelled. Nothing sent.')} />
+            </Container>
+            <Text fontFamily="rajdhani" fontWeight="bold" fontSize={28} color={C.amber}>
+              {countdown}
+            </Text>
+          </Container>
+        ) : armed ? (
           <Container flexDirection="row" alignItems="center" gap={16}>
             <Button label="SEND NOW" colour={C.green} onClick={() => void voiceRef.current.send()} />
             <Button label="CANCEL" colour={C.red} onClick={() => voiceRef.current.cancel('Cancelled. Nothing sent.')} />

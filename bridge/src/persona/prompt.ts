@@ -314,7 +314,8 @@ export function validateClassified(c: Classified | null, o: { grammar: Interpret
   }
   const text = g.kind === 'which' ? g.text.trim() : ''
   if (!text) return { ok: false, why: 'no message in his words to send' }
-  return { ok: true, i: { kind: 'tell', sessionId: s.id, callsign: s.callsign, text, viaDispatcher: false, say: `To ${s.callsign}: ${text}` } }
+  // Marked, so the HUD gives a target the model picked the full card and never the quick one.
+  return { ok: true, i: { kind: 'tell', sessionId: s.id, callsign: s.callsign, text, viaDispatcher: false, viaClassifier: true, say: `To ${s.callsign}: ${text}` } }
 }
 
 // ---------------------------------------------------------------- speaking up

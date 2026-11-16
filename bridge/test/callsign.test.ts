@@ -132,3 +132,13 @@ test('a second session under a project override is named from its title, and onl
   assert.equal(c.get('audit'), 'Codex')
   assert.equal(c.get('bare'), 'Claude Three', 'no title to use, so it is numbered')
 })
+
+test('callsigns: a derived name never starts with a word the grammar takes as a command, a confirm, a cancel or a filler', () => {
+  // A session called "Yep" would send whatever card is armed the moment he said its name.
+  const c = assignCallsigns([s('a', 'yep', 1), s('b', 'yeah-board', 2), s('c', 'go-fish', 3), s('d', 'please-tally', 4), s('e', 'voice-lab', 5)])
+  assert.equal(c.get('b'), 'Board')
+  assert.equal(c.get('c'), 'Fish')
+  assert.equal(c.get('d'), 'Tally')
+  assert.equal(c.get('e'), 'Lab')
+  for (const name of c.values()) assert.doesNotMatch(name.toLowerCase(), /^(yep|yeah|yes|go|please|voice)\b/, name)
+})

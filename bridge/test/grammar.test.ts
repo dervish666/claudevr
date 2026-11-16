@@ -108,8 +108,55 @@ test('reader open: speech that names nobody goes straight to that session, not t
   // Naming another session, or a command, still wins over the open one.
   assert.equal(expectKind(focused('tell quill to check the parser'), 'tell').sessionId, 'demo-quill')
   expectKind(focused('status'), 'status')
-  // A focus that is not in the fleet is ignored: back to the dispatcher rule.
-  assert.equal(expectKind(focused('run the whole suite again', 'none', 'gone'), 'tell').viaDispatcher, true)
+  // A focus that has left the fleet: the words were for it, so they go nowhere, never to the dispatcher.
+  assert.deepEqual(focused('run the whole suite again', 'none', 'gone'), { kind: 'unknown', say: 'The session you had open has gone. Nothing was armed; say who it is for, or say dispatcher.' })
+  assert.equal(expectKind(focused('yes', 'none', 'gone'), 'unknown').say, 'Nothing to send.')
+  // Commands still run with the stale focus.
+  expectKind(focused('status', 'none', 'gone'), 'status')
+  assert.equal(expectKind(focused('tell quill to check the parser', 'none', 'gone'), 'tell').sessionId, 'demo-quill')
+  assert.equal(expectKind(focused('Tally', 'none', 'gone'), 'switch').sessionId, 't-tally')
+  expectKind(focused('dispatcher', 'none', 'gone'), 'dispatcher')
+})
+
+test('armed card: speech that is no command cancels it; commands and the confirm words still work', () => {
+  const STOPPERS = ['Wait.', 'no wait', 'Hold on.', 'No, no, no.', 'Wait, that is wrong.']
+  for (const w of STOPPERS) assert.deepEqual(run(w, 'confirm'), { kind: 'cancel', say: 'Cancelled. Nothing sent.' }, w)
+  // With the reader open, or no fleet, the same.
+  for (const w of STOPPERS) assert.equal(interpret({ transcript: w, fleet, heardAs, context: 'confirm', focusId: 't-tally', now: NOW }).kind, 'cancel', `${w}, Tally open`)
+  for (const w of STOPPERS) assert.equal(interpret({ transcript: w, fleet, heardAs, context: 'confirm', focusId: 'gone', now: NOW }).kind, 'cancel', `${w}, a focus that has gone`)
+  assert.equal(run('wait', 'confirm', null).kind, 'cancel')
+  // A message longer than three words that names nobody is not a new card either.
+  assert.equal(run('Find out why the backup job keeps failing.', 'confirm').kind, 'cancel')
+  // Explicit commands still run.
+  for (const w of ['send', 'Yes.', 'go ahead']) expectKind(run(w, 'confirm'), 'confirm')
+  const tell = expectKind(run('tell tally do x', 'confirm'), 'tell')
+  assert.equal(tell.sessionId, 't-tally')
+  assert.equal(tell.text, 'Do x')
+  expectKind(run('status', 'confirm'), 'status')
+  expectKind(run('limits', 'confirm'), 'limits')
+  assert.equal(expectKind(run('read tally', 'confirm'), 'read').sessionId, 't-tally')
+  assert.equal(expectKind(run('switch to tally', 'confirm'), 'switch').sessionId, 't-tally')
+  assert.equal(expectKind(run('Tally', 'confirm'), 'switch').sessionId, 't-tally')
+  expectKind(run('dispatcher', 'confirm'), 'dispatcher')
+  assert.equal(expectKind(run('tell zebra to run the tests', 'confirm'), 'which').why, 'no-match')
+  assert.match(expectKind(run('tell tally', 'confirm'), 'unknown').say, /Tell Tally what/)
+  // With nothing armed, the same words are what they always were.
+  for (const w of ['Wait.', 'no wait', 'Hold on.']) assert.match(expectKind(run(w), 'unknown').say, /That is not a command/, w)
+  for (const w of ['No, no, no.', 'Wait, that is wrong.']) assert.equal(expectKind(run(w), 'tell').viaDispatcher, true, w)
+  assert.equal(expectKind(interpret({ transcript: 'wait', fleet, heardAs, context: 'none', focusId: 't-tally', now: NOW }), 'tell').viaFocus, true)
+  // Asked "who is it for?", a name is still the answer.
+  expectKind(run('Tally.', 'target'), 'target')
+})
+
+test("armed card in character mode: \"Bosun, wait\" cancels; \"Bosun, send\" and a command after the name still work", () => {
+  const characters = [{ name: 'bosun', heardAs: [] }]
+  const say = (transcript: string, context: 'none' | 'confirm' = 'confirm') => interpret({ transcript, fleet, heardAs, context, focusId: 't-tally', characters, character: 'bosun', now: NOW })
+  for (const w of ['Bosun, wait.', 'Bosun, hold on', 'Bosun, no no no', 'Bosun, wait that is wrong', 'Bosun, what do you make of this?']) assert.deepEqual(say(w), { kind: 'cancel', say: 'Cancelled. Nothing sent.' }, w)
+  expectKind(say('Bosun, send'), 'confirm')
+  expectKind(say('Bosun, status'), 'status')
+  assert.equal(expectKind(say('Bosun, tell Tally to run the tests'), 'tell').callsign, 'Tally')
+  // With nothing armed, words to the character are still a question for it.
+  assert.equal(say('Bosun, wait.', 'none').kind, 'ask')
 })
 
 test('reader open on a session that cannot be sent to: it says so, and does not fall back to the dispatcher', () => {
@@ -258,7 +305,7 @@ test('"be X" still works when speech-to-text writes it as "B. X" or "Bee X"', ()
   const characters = [{ name: 'bosun', heardAs: [] }]
   for (const w of ['B. Bosun.', 'Bee bosun', 'be Bosun']) {
     const i = interpret({ transcript: w, fleet, heardAs, context: 'none', focusId: 't-tally', characters, character: null, now: NOW })
-    assert.deepEqual(i, { kind: 'character', character: 'bosun', changed: true, say: 'Character: bosun.' }, w)
+    assert.deepEqual(i, { kind: 'character', character: 'bosun', changed: true, say: 'Character: Bosun.' }, w)
   }
   assert.equal(interpret({ transcript: 'B. Careful with that', fleet, heardAs, context: 'none', focusId: 't-tally', characters, character: null, now: NOW }).kind, 'tell', 'not a character: still a message')
 })

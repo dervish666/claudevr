@@ -34,7 +34,8 @@ export function Reader({ s, token, now, stateWord, waiting, onClose, character =
           {asCharacter && <span className="reader-via">via dispatcher</span>}
           <span className={`state st-${s.state}`}>{stateWord}</span>
           <ContextBadge c={s.context} big />
-          <span className="focus-meta">
+          {/* One line in the header, cut short when it does not fit; the whole of it on hover. */}
+          <span className="focus-meta" title={`${s.title}${s.project ? ` · ${s.project}` : ''}`}>
             {s.title}
             {s.project ? ` · ${s.project}` : ''} · {age(s.activeAt, now)}
             {s.canSend ? '' : ' · no send route'}

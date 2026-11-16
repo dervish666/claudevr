@@ -19,6 +19,7 @@ import { Controls } from './Controls.tsx'
 import { Alarm, CardView, CORE_Y, HeardLine, Iris, RING_R, RING_Z, Rings, TopArc, VoiceArc, sameVoice } from './Core.tsx'
 import { leakProbe } from './leakprobe.ts'
 import { settings, setSetting, useSettings } from './settings.ts'
+import { armsNow } from './sendcue.ts'
 import { audioListener, blips, chime, routeFrom } from './sound.ts'
 import { FRAMEBUFFER_SCALE, countTextures, glTextures, store } from './store.ts'
 import { MESH_WIDTH_M, RADIUS, STREAM_HEIGHT_M, StreamLayer, StreamMesh, streamScroll, useTranscript, type Target } from './Stream.tsx'
@@ -355,11 +356,10 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   const wantTheme = (preview && PREVIEW_THEME) || character?.theme || null
   const irisColour = target.kind === 'dispatcher' ? accent : stateColour(target.session.state)
 
-  // A selection whose session left the fleet falls back to the dispatcher.
-  useEffect(() => {
-    if (!fleet || !sel) return
-    if (!fleetIds.has(sel)) select(null)
-  }, [fleet, fleetIds, sel, select])
+  // A selection whose session left the fleet shows the dispatcher (rawTarget
+  // above) but is kept: voice must not follow the view there, or words meant
+  // for the session would become a card for the dispatcher (hud/focus.ts).
+  // Picking a tile or saying "dispatcher" ends it.
   useEffect(() => log('target', { kind: target.kind, id: p.selected }), [target.kind, p.selected])
 
   // ------------------------------------------------------------ cards
@@ -406,6 +406,15 @@ function Scene(p: GateProps & { session: XRSession | null }) {
   useEffect(() => {
     if (cardState === 'sending') blips.send()
   }, [cardState])
+  // Once per card, when it arms. Muted means silent, here as for the character's lines.
+  const lastArmed = useRef<number | null>(null)
+  useEffect(() => {
+    const c = voice.card
+    if (!armsNow(lastArmed.current, c)) return
+    lastArmed.current = c!.id
+    if (!voice.muted) blips.armed()
+  }, [voice.card, voice.muted])
+  const toggleMute = useStable(() => voiceRef.current.toggleMute())
 
   // ------------------------------------------------------------ hold to talk
   const hold = useRef<{ by: 'iris' | 'grip'; at: number } | null>(null)
@@ -597,7 +606,7 @@ function Scene(p: GateProps & { session: XRSession | null }) {
             <meshBasicMaterial color="#000" side={BackSide} transparent opacity={s.dimmer} depthWrite={false} toneMapped={false} />
           </mesh>
         )}
-        <ThemeDriver token={p.token} want={wantTheme} />
+        <ThemeDriver token={p.token} want={wantTheme} character={character?.name ?? null} />
         <ThemePart part="core">
           <Rings accent={accent} />
         </ThemePart>
@@ -660,7 +669,7 @@ function Scene(p: GateProps & { session: XRSession | null }) {
         </group>
         <group name="controls">
           <ThemePart part="controls">
-            <Controls streamNote={streamNote} perf={perf} mic={mic} preview={preview} onRecenter={recenter} onFakeNeed={fakeNeed} onExit={exit} />
+            <Controls streamNote={streamNote} perf={perf} mic={mic} preview={preview} muted={voice.muted} onToggleMute={toggleMute} onRecenter={recenter} onFakeNeed={fakeNeed} onExit={exit} />
           </ThemePart>
         </group>
       </LineWork>

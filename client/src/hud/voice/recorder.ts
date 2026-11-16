@@ -5,6 +5,7 @@
 // the headset shows the scene).
 
 import { audioContext } from './audio-context.ts'
+import { Takes, type Clip } from './take.ts'
 
 export type MicFailure = 'denied' | 'no-mic' | 'insecure' | 'unsupported' | 'busy' | 'error'
 
@@ -20,10 +21,7 @@ export class MicError extends Error {
 /** The headset recorded these; the first one supported wins. */
 const TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4']
 
-export interface Clip {
-  blob: Blob
-  ms: number
-}
+export type { Clip } from './take.ts'
 
 /** The mic track as the browser reports it, for the instrument log. */
 export interface MicState {
@@ -36,10 +34,8 @@ export interface MicState {
 
 export class Recorder {
   private stream: MediaStream | null = null
-  private rec: MediaRecorder | null = null
-  private chunks: Blob[] = []
-  private startedAt = 0
-  private aborted = false
+  /** One clip at a time, each with its own recorder and audio (take.ts). */
+  private readonly takes = new Takes({ now: () => performance.now(), setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: h => clearTimeout(h as ReturnType<typeof setTimeout>) })
   private analyser: AnalyserNode | null = null
   private source: MediaStreamAudioSourceNode | null = null
   private samples: Float32Array<ArrayBuffer> | null = null
@@ -51,7 +47,15 @@ export class Recorder {
   }
 
   get recording(): boolean {
-    return this.rec?.state === 'recording'
+    return this.takes.recording
+  }
+
+  /**
+   * True from start() until that recorder's stop or error event. A press
+   * in that gap must wait: starting over would take the last clip's audio.
+   */
+  get busy(): boolean {
+    return this.takes.busy
   }
 
   async ensureMic(): Promise<void> {
@@ -108,39 +112,18 @@ export class Recorder {
 
   start(): void {
     if (!this.stream) throw new MicError('error', 'no microphone stream')
+    if (this.takes.busy) throw new MicError('busy', 'the last clip is still being finished')
     const mimeType = TYPES.find(t => MediaRecorder.isTypeSupported(t))
-    this.chunks = []
-    this.aborted = false
-    this.rec = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined)
-    this.rec.ondataavailable = e => {
-      if (e.data.size) this.chunks.push(e.data)
-    }
-    this.startedAt = performance.now()
-    this.rec.start()
+    this.takes.start(new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined))
   }
 
-  /** Ends the clip and hands it over; null if it was aborted. */
+  /** Ends the clip and hands it over once the recorder has finished; null if it was aborted or there is none. */
   stop(): Promise<Clip | null> {
-    const rec = this.rec
-    if (!rec || rec.state === 'inactive') return Promise.resolve(null)
-    return new Promise(ok => {
-      rec.onstop = () => {
-        this.rec = null
-        if (this.aborted) return ok(null)
-        ok({ blob: new Blob(this.chunks, { type: rec.mimeType || 'audio/webm' }), ms: Math.round(performance.now() - this.startedAt) })
-      }
-      rec.onerror = ev => {
-        console.error('voice: MediaRecorder error:', ev)
-        this.rec = null
-        ok({ blob: new Blob([], { type: rec.mimeType }), ms: Math.round(performance.now() - this.startedAt) })
-      }
-      rec.stop()
-    })
+    return this.takes.stop()
   }
 
   abort(): void {
-    this.aborted = true
-    void this.stop()
+    this.takes.abort()
   }
 
   release(): void {

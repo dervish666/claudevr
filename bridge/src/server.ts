@@ -15,6 +15,7 @@
 //
 //   GET  /api/health  backend status               address check + token
 //   GET  /api/fleet   the last fleet read          address check + token
+//   POST /api/unpair  a paired device revokes its own token; the legacy token is revoked on /pair only
 //   POST /api/probe   append probe results to the log
 //   POST /api/probe?log=instrument  { events: [...] } -> one line each in instrument.log
 //   POST /api/send    { sessionId, text, requestId? } -> backend.send, rate limited, a repeated requestId answered once
@@ -53,14 +54,15 @@ import { createServer, type Server } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, extname, join, normalize, sep } from 'node:path'
-import { WebSocketServer, type WebSocket } from 'ws'
-import type { BackendStatus, BuildInfo, CharacterReply, ClientMessage, Conversation, Fleet, Interpretation, PairStatus, PairTicket, PendingLine, ServerMessage, SessionTranscript, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
-import { Busy, ipAllowed, isLoopback, KeyedBudget, loopbackHost, normaliseIp, originOk, Pool, RateLimiter, tokenOf, WS_PROTOCOL } from './gate.ts'
-import { DeviceStore, PairingRequests, sameCredential, type Credential } from './pairing.ts'
+import type { BackendStatus, BuildInfo, CharacterReply, Conversation, Fleet, Interpretation, PairStatus, PairTicket, PendingLine, ServerMessage, SessionTranscript, Transcript, VoiceContext, VoiceReply, VoiceStatus } from '../../shared/protocol.ts'
+import { Busy, ipAllowed, isLoopback, KeyedBudget, loopbackHost, normaliseIp, originOk, Pool, RateLimiter, tokenOf } from './gate.ts'
+import { DeviceStore, PairingRequests, type Credential } from './pairing.ts'
 import { SendRefused, UnsupportedError, type SessionBackend } from './backend/types.ts'
 import { relabelFleet, type CallsignOverride } from './backend/callsign.ts'
+import { SendLedger, type SendOutcome } from './send-ledger.ts'
+import { WsHub } from './ws-hub.ts'
 import { ClipError, decodeClip, levels, SILENCE_PEAK_DB } from './voice/audio.ts'
-import { interpret } from './voice/grammar.ts'
+import { characterSwitch, interpret } from './voice/grammar.ts'
 import { NoStt, SttBusy, SttUnavailable, type SttProvider } from './voice/stt.ts'
 import { NoTts, TtsUnavailable, type TtsProvider } from './voice/tts.ts'
 import type { Persona } from './persona/persona.ts'
@@ -174,8 +176,12 @@ const EVENTS_MAX = 400
 const HEAVY = new Set(['/api/transcript', '/api/transcribe', '/api/interpret', '/api/speak', '/api/character'])
 /** A send's requestId: the card's id, as the HUD sends it. */
 export const SEND_REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/
-/** The WebSocket close code for a socket whose device or token was just revoked. */
-export const REVOKED_CLOSE = 4003
+/** The 401 for a request whose token is missing, wrong or revoked. */
+const TOKEN_REFUSED = 'pairing token missing, wrong or revoked'
+/** The retry-after, in seconds, on a 503 from a full pool (transcript reads, clips, speech). */
+const BUSY_RETRY_S = '2'
+// Moved to ws-hub.ts with the rest of the socket handling; still exported from here for callers and tests.
+export { REVOKED_CLOSE, sendBounded } from './ws-hub.ts'
 
 // The page's policy. 'wasm-unsafe-eval' lets instrument mode compile its
 // layout engine (yoga, WebAssembly shipped inline in the JS) and nothing
@@ -206,22 +212,6 @@ export function requestUrl(req: IncomingMessage): URL | Error {
   }
 }
 
-/**
- * Sends `data` unless the socket already has more than `max` bytes waiting
- * to go out. A client that stops reading is dropped rather than buffered
- * without end; the HUD reconnects and gets a fresh fleet.
- */
-export function sendBounded(ws: Pick<WebSocket, 'readyState' | 'OPEN' | 'bufferedAmount' | 'send' | 'terminate'>, data: string, max: number, onDrop: (buffered: number) => void): boolean {
-  if (ws.readyState !== ws.OPEN) return false
-  if (ws.bufferedAmount > max) {
-    onDrop(ws.bufferedAmount)
-    ws.terminate()
-    return false
-  }
-  ws.send(data)
-  return true
-}
-
 /** Appends to a log that first rotates to <file>.1 when it would pass `max` bytes, so it never holds much more than twice that on disk. */
 export async function appendRotating(file: string, text: string, max: number): Promise<void> {
   await mkdir(dirname(file), { recursive: true })
@@ -235,19 +225,35 @@ export async function appendRotating(file: string, text: string, max: number): P
   await appendFile(file, text, { mode: 0o600 })
 }
 
+/**
+ * A JSON body of at most `max` bytes. One that is too big is refused with a
+ * 413 the client can read: a declared length over the limit is refused at
+ * once and the rest drained, and an undeclared one stops being kept at the
+ * limit and is refused when it ends. Destroying the request instead would
+ * reset the connection, and the client would never see why.
+ */
 function readBody(req: IncomingMessage, max: number): Promise<unknown> {
   return new Promise((ok, fail) => {
     if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return fail(new HttpError(415, 'application/json only'))
+    const tooBig = () => new HttpError(413, `body over ${max} bytes`)
+    if (Number(req.headers['content-length'] ?? NaN) > max) {
+      fail(tooBig())
+      req.resume()
+      return
+    }
     const chunks: Buffer[] = []
     let size = 0
+    let over = false
     req.on('data', (c: Buffer) => {
+      if (over) return
       size += c.length
-      if (size > max) {
-        fail(new HttpError(413, `body over ${max} bytes`))
-        req.destroy()
-      } else chunks.push(c)
+      if (size <= max) return void chunks.push(c)
+      // Past the limit: keep nothing more, drain the rest, answer at the end.
+      over = true
+      chunks.length = 0
     })
     req.on('end', () => {
+      if (over) return fail(tooBig())
       try {
         ok(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       } catch (err) {
@@ -260,6 +266,10 @@ function readBody(req: IncomingMessage, max: number): Promise<unknown> {
 
 function readRaw(req: IncomingMessage, max: number): Promise<Buffer> {
   return new Promise((ok, fail) => {
+    // A clip waits for a pool slot before it is read. One abandoned while it
+    // waited has already closed, so its data and end events have been and
+    // gone: without this the promise never settles and the slot is lost for good.
+    if (req.destroyed) return fail(new HttpError(400, 'the upload was abandoned before it was read'))
     const declared = Number(req.headers['content-length'] ?? NaN)
     if (declared > max) {
       fail(new HttpError(413, `clip over ${max} bytes`))
@@ -276,10 +286,16 @@ function readRaw(req: IncomingMessage, max: number): Promise<Buffer> {
         over = true
       } else chunks.push(c)
     })
+    let ended = false
     req.on('end', () => {
+      ended = true
       if (!over) ok(Buffer.concat(chunks))
     })
     req.on('error', err => fail(err))
+    // Abandoned part way: no end will come.
+    req.on('close', () => {
+      if (!ended && !over) fail(new HttpError(400, 'the upload was abandoned before it arrived'))
+    })
   })
 }
 
@@ -289,15 +305,6 @@ const asObject = (d: unknown) => (typeof d === 'object' && d !== null && !Array.
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers })
   res.end(JSON.stringify(body))
-}
-
-/** What a send came to, kept under its requestId so a repeat gets the same answer. */
-interface SendOutcome {
-  status: number
-  body: Record<string, unknown>
-  headers: Record<string, string>
-  /** False for a refusal that went nowhere: forgotten, so a retry of the card may try again. */
-  remember: boolean
 }
 
 export function createBridge(o: BridgeOptions): Bridge {
@@ -321,6 +328,16 @@ export function createBridge(o: BridgeOptions): Bridge {
   const persona = o.persona ?? null
   const conversation = (): Conversation => persona?.conversation() ?? { character: null, entries: [] }
   const voice = (): VoiceStatus => ({ stt: stt.status(), tts: tts.status(), ...(persona ? { persona: persona.status() } : {}) })
+  /** The voice status as last pushed to the HUDs, so speech requests push only a change. */
+  let voiceSent = JSON.stringify(voice())
+  /** Pushes the voice status to every HUD: when it differs from the last push, or always (`force`) for a provider's own status event. */
+  const pushVoice = (force = false) => {
+    const v = voice()
+    const s = JSON.stringify(v)
+    if (!force && s === voiceSent) return
+    voiceSent = s
+    broadcast({ type: 'voice', voice: v, status })
+  }
   let build: BuildInfo = { id: null, reload: !!o.devReload }
   const devices = o.devices ?? new DeviceStore({ file: null, legacyToken: o.token ?? null, log })
   const pairing = o.pairing ?? new PairingRequests({ devices, log })
@@ -353,7 +370,7 @@ export function createBridge(o: BridgeOptions): Bridge {
   /** 503: the bridge is already doing as much of this as it will. */
   function busy(res: ServerResponse, err: Busy): void {
     noteOnce(`busy:${err.message}`, `limits: ${err.message}`)
-    return sendJson(res, 503, { error: err.message }, { 'retry-after': '2' })
+    return sendJson(res, 503, { error: err.message }, { 'retry-after': BUSY_RETRY_S })
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -393,35 +410,59 @@ export function createBridge(o: BridgeOptions): Bridge {
     res.end(req.method === 'HEAD' ? undefined : data)
   }
 
+  /**
+   * The gate's first two steps for an API request or a theme image: a
+   * same-origin request, within this client's request budget. False once the
+   * refusal has been answered.
+   */
+  function admit(req: IncomingMessage, res: ServerResponse, path: string, ip: string): boolean {
+    if (!originOk(req)) return (sendJson(res, 403, { error: 'not from this origin' }), false)
+    const over = apiBudget.take(ip)
+    if (over) return (tooMany(res, path, ip, 'api', `over ${limits.apiPerMinute} requests a minute; try again in ${over.retryAfterS} s`, over.retryAfterS), false)
+    return true
+  }
+
+  /**
+   * The whole gate for a request that needs a token: admit(), then a paired
+   * device's token or the legacy one, noted as seen. The credential, or null
+   * once the refusal has been answered.
+   */
+  function authorise(req: IncomingMessage, res: ServerResponse, path: string, ip: string): Credential | null {
+    if (!admit(req, res, path, ip)) return null
+    const cred = devices.match(tokenOf(req))
+    if (!cred) {
+      noteOnce(`token:${ip}`, `gate: ${req.method} ${path} from ${ip}: missing, wrong or revoked token`)
+      sendJson(res, 401, { error: TOKEN_REFUSED })
+      return null
+    }
+    devices.seen(cred)
+    return cred
+  }
+
   async function api(req: IncomingMessage, res: ServerResponse, url: URL, ip: string): Promise<void> {
     const path = url.pathname
-    if (!originOk(req)) return sendJson(res, 403, { error: 'not from this origin' })
-    const over = apiBudget.take(ip)
-    if (over) return tooMany(res, path, ip, 'api', `over ${limits.apiPerMinute} requests a minute; try again in ${over.retryAfterS} s`, over.retryAfterS)
     // Auto-pairing (deprecated): hands the legacy token to any allowed
     // address that asks. It answers only when autoPair is on, and the address
     // check has already passed, so with autoPair on the allow list alone
     // decides who may use the bridge.
     if (path === '/api/pair' && req.method === 'POST') {
+      if (!admit(req, res, path, ip)) return
       if (!o.autoPair) return sendJson(res, 403, { error: 'auto-pairing is off; pair with the code this page shows' })
       const token = devices.ensureLegacy()
       log(`pair: gave the legacy token to ${ip} (autoPair is on)`)
       return sendJson(res, 200, { token })
     }
     // The handshake, by which a browser with no token gets one.
-    if (path.startsWith('/api/pair/')) return pairRoute(req, res, url, ip)
-    const cred = devices.match(tokenOf(req))
-    if (!cred) {
-      noteOnce(`token:${ip}`, `gate: ${req.method} ${path} from ${ip}: missing, wrong or revoked token`)
-      return sendJson(res, 401, { error: 'pairing token missing, wrong or revoked' })
-    }
-    devices.seen(cred)
+    if (path.startsWith('/api/pair/')) return admit(req, res, path, ip) ? pairRoute(req, res, url, ip) : undefined
+    const cred = authorise(req, res, path, ip)
+    if (!cred) return
     if (HEAVY.has(path)) {
       const h = heavyBudget.take(ip)
       if (h) return tooMany(res, path, ip, 'heavy', `over ${limits.heavyPerMinute} voice and transcript requests a minute; try again in ${h.retryAfterS} s`, h.retryAfterS)
     }
     if (path === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true, backend: status })
     if (path === '/api/fleet' && req.method === 'GET') return sendJson(res, 200, { status, fleet: lastFleet })
+    if (path === '/api/unpair' && req.method === 'POST') return unpairRoute(res, cred, ip)
     if (path === '/api/probe' && req.method === 'POST' && url.searchParams.get('log') === 'instrument') return instrumentRoute(req, res, ip)
     if (path === '/api/probe' && req.method === 'POST') {
       const d = await readBody(req, JSON_MAX)
@@ -458,15 +499,7 @@ export function createBridge(o: BridgeOptions): Bridge {
    */
   async function themeAsset(req: IncomingMessage, res: ServerResponse, path: string, ip: string): Promise<void> {
     if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' })
-    if (!originOk(req)) return sendJson(res, 403, { error: 'not from this origin' })
-    const over = apiBudget.take(ip)
-    if (over) return tooMany(res, path, ip, 'api', `over ${limits.apiPerMinute} requests a minute; try again in ${over.retryAfterS} s`, over.retryAfterS)
-    const cred = devices.match(tokenOf(req))
-    if (!cred) {
-      noteOnce(`token:${ip}`, `gate: ${req.method} ${path} from ${ip}: missing, wrong or revoked token`)
-      return sendJson(res, 401, { error: 'pairing token missing, wrong or revoked' })
-    }
-    devices.seen(cred)
+    if (!authorise(req, res, path, ip)) return
     const parts = path.split('/')
     if (parts.length !== 4 || !o.themes) return sendJson(res, 404, { error: 'not found' })
     const a = await o.themes.asset(parts[2]!, parts[3]!)
@@ -596,6 +629,22 @@ export function createBridge(o: BridgeOptions): Bridge {
     return sendJson(res, 404, { error: 'no such route' })
   }
 
+  /**
+   * POST /api/unpair: a device unpairs itself, with the same effect as Revoke
+   * on the approval page (its token stops working, its sockets close). The
+   * legacy token is shared by every browser holding it, so one of them cannot
+   * revoke it for the rest; that is done on the approval page.
+   */
+  function unpairRoute(res: ServerResponse, cred: Credential, ip: string): void {
+    if (cred.kind === 'legacy') {
+      log(`pair: ${ip} asked to unpair with the legacy token; nothing revoked`)
+      return sendJson(res, 200, { revoked: false, reason: `the legacy token is shared by every browser that has it; revoke it on the pairing page at ${approveUrl()}` })
+    }
+    const d = devices.revoke(cred.id)
+    log(d ? `pair: ${d.label} (paired from ${d.ip}) unpaired itself from ${ip}` : `pair: ${ip} asked to unpair a device that was already gone`)
+    return sendJson(res, 200, { revoked: true })
+  }
+
   // The two logs: writes to one file go one at a time, so a rotation never
   // races an append.
   const logChains = new Map<string, Promise<void>>()
@@ -643,10 +692,10 @@ export function createBridge(o: BridgeOptions): Bridge {
    */
   async function transcribeRoute(req: IncomingMessage, res: ServerResponse, q: URLSearchParams, ip: string): Promise<void> {
     const t0 = Date.now()
-    const fail = (http: number, t: Omit<Extract<Transcript, { ok: false }>, 'ok' | 'provider'>) => {
+    const fail = (http: number, t: Omit<Extract<Transcript, { ok: false }>, 'ok' | 'provider'>, headers: Record<string, string> = {}) => {
       log(`stt: ${ip}: ${t.reason}: ${t.error}`)
       const reply: VoiceReply = { transcript: { ok: false, provider: stt.name, ...t }, interpretation: null }
-      return sendJson(res, http, reply)
+      return sendJson(res, http, reply, headers)
     }
     const type = String(req.headers['content-type'] ?? '')
     if (!/^(audio\/|video\/webm|application\/octet-stream)/.test(type)) {
@@ -693,7 +742,8 @@ export function createBridge(o: BridgeOptions): Bridge {
     } catch (err) {
       if (!(err instanceof Busy)) throw err
       // The upload is left unread; Node drains it once this answer is sent.
-      return fail(503, { reason: 'busy', error: err.message, audioMs: null, peakDb: null })
+      // The same wait as the other pools' refusals (busy below).
+      return fail(503, { reason: 'busy', error: err.message, audioMs: null, peakDb: null }, { 'retry-after': BUSY_RETRY_S })
     }
     if (!heard) return
     const transcript: Transcript = { ok: true, text: heard.text, provider: stt.name, audioMs: heard.audioMs, sttMs: heard.sttMs, totalMs: Date.now() - t0 }
@@ -723,7 +773,9 @@ export function createBridge(o: BridgeOptions): Bridge {
       }
     }
     if (!persona?.current()) return { interpretation: i, line: null }
-    i = await persona.classify(text, i, () => lastFleet, Date.now)
+    // With a card armed the grammar's answer stands: a model must never turn
+    // words he said over a counting card into a new target or a new message.
+    if (context !== 'confirm') i = await persona.classify(text, i, () => lastFleet, Date.now)
     return { interpretation: i, line: persona.startLine(i, text, () => lastFleet) }
   }
 
@@ -740,7 +792,7 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (want !== null && !persona?.characters().some(c => c.name === want)) return sendJson(res, 404, { error: persona?.characters().length ? `no character called ${JSON.stringify(want.slice(0, 40))}` : 'no characters are set up in the bridge config' })
     const cur = persona?.current()?.name ?? null
     const i: Extract<Interpretation, { kind: 'character' }> =
-      want === null ? { kind: 'character', character: null, changed: cur !== null, say: cur ? 'Operator mode.' : 'Already in operator mode.' } : { kind: 'character', character: want, changed: want !== cur, say: want === cur ? `Already ${want}.` : `Character: ${want}.` }
+      want === null ? { kind: 'character', character: null, changed: cur !== null, say: cur ? 'Operator mode.' : 'Already in operator mode.' } : characterSwitch(want, cur)
     if (!persona) return sendJson(res, 200, { interpretation: i } satisfies CharacterReply)
     // A press counts as him speaking: unprompted lines hold back for a moment, as they do after a hold.
     persona.heardVoice()
@@ -762,6 +814,7 @@ export function createBridge(o: BridgeOptions): Bridge {
     try {
       if (!tts.select) throw new Error('this text-to-speech provider has one voice')
       tts.select(name)
+      pushVoice()
       return i
     } catch (err) {
       log('tts: could not change voice:', (err as Error).message)
@@ -792,6 +845,10 @@ export function createBridge(o: BridgeOptions): Bridge {
       if (err instanceof TtsUnavailable) return sendJson(res, 503, { error: `speech unavailable: ${err.message}` })
       log('tts: failed:', (err as Error).message)
       return sendJson(res, 502, { error: `speech failed: ${(err as Error).message}` })
+    } finally {
+      // A request is where speech finds out it is failing (fish.audio falling
+      // back to say) or has recovered; open HUDs hear of it only if it changed.
+      pushVoice()
     }
   }
 
@@ -825,24 +882,20 @@ export function createBridge(o: BridgeOptions): Bridge {
     }
   }
 
-  // A send whose answer was lost is retried by the HUD with the same
-  // requestId. The first outcome is kept here, by id, so the retry gets that
-  // answer instead of a second delivery. In memory only: across a restart
-  // the dashweb adapter still gives T3 the same clientRequestId.
-  const sendIds = new Map<string, { at: number; key: string; outcome: Promise<SendOutcome> }>()
-  const sendKey = (sessionId: string, text: string) => createHash('sha256').update(sessionId).update('\0').update(text).digest('hex')
-  function pruneSendIds(now: number): void {
-    // Insertion order is age order: stop at the first one still young.
-    for (const [id, e] of sendIds) {
-      if (now - e.at <= limits.sendIdsMs) break
-      sendIds.delete(id)
-    }
-    while (sendIds.size >= limits.sendIdsMax) sendIds.delete(sendIds.keys().next().value!)
-  }
+  // A retried send is answered from here, not sent again (send-ledger.ts).
+  const ledger = new SendLedger(limits.sendIdsMs, limits.sendIdsMax)
 
   async function sendRoute(req: IncomingMessage, res: ServerResponse, ip: string): Promise<void> {
     if (!o.backend.capabilities.send) return sendJson(res, 501, { error: `${o.backend.name} cannot send` })
     const body = asObject(await readBody(req, JSON_MAX))
+    // The gate checked the token when the request began. A device revoked
+    // while its body was arriving must not send, so it is checked again here,
+    // after the last await before the backend call: from here to that call
+    // nothing waits. Refused this way, no rate limit slot is spent.
+    if (!devices.match(tokenOf(req))) {
+      log(`send: ${ip}: the token was revoked while the request arrived; refused, nothing sent`)
+      return sendJson(res, 401, { error: TOKEN_REFUSED })
+    }
     const sessionId = body.sessionId
     const text = body.text
     if (typeof sessionId !== 'string' || !sessionId) return sendJson(res, 400, { error: 'sessionId: which session' })
@@ -851,19 +904,17 @@ export function createBridge(o: BridgeOptions): Bridge {
     const requestId = body.requestId as string | undefined
     const reply = (x: SendOutcome, repeat: boolean) => sendJson(res, x.status, repeat ? { ...x.body, repeat: true } : x.body, x.headers)
     const now = Date.now()
-    pruneSendIds(now)
-    const key = sendKey(sessionId, text)
-    const seen = requestId ? sendIds.get(requestId) : undefined
-    if (seen) {
-      if (seen.key !== key) {
-        log(`send: ${ip} reused request ${requestId!.slice(0, 16)} for a different message; refused, nothing sent`)
-        return sendJson(res, 409, { error: 'requestId was already used for a different message; nothing was sent' })
-      }
+    const seen = ledger.check(requestId, sessionId, text, now)
+    if (seen.kind === 'conflict') {
+      log(`send: ${ip} reused request ${requestId!.slice(0, 16)} for a different message; refused, nothing sent`)
+      return sendJson(res, 409, { error: 'requestId was already used for a different message; nothing was sent' })
+    }
+    if (seen.kind === 'repeat') {
       // Answered before the rate limit, which a repeat does not spend.
       log(`send: ${ip} repeated request ${requestId!.slice(0, 16)}; answering with the first outcome, nothing sent again`)
       return reply(await seen.outcome, true)
     }
-    const limited = limiter.take()
+    const limited = limiter.take(now)
     if (limited) {
       log(`send: rate limited ${ip}, retry in ${limited.retryAfterS} s`)
       return sendJson(res, 429, { error: `too many sends; try again in ${limited.retryAfterS} s` }, { 'retry-after': String(limited.retryAfterS) })
@@ -886,9 +937,15 @@ export function createBridge(o: BridgeOptions): Bridge {
         return { status: 504, body: { error: `backend: ${e.message}`, outcome: 'unknown' }, headers: {}, remember: true }
       }
     })()
-    if (requestId) sendIds.set(requestId, { at: now, key, outcome })
+    if (requestId) ledger.remember(requestId, seen.key, outcome, now)
     const out = await outcome
-    if (requestId && !out.remember) sendIds.delete(requestId)
+    if (!out.remember) {
+      // Refused before anything went out (no such session, no send route): the
+      // slot goes back, so a few refusals cannot use up the minute's sends. A
+      // 504, whose message may have arrived, is remembered and keeps its slot.
+      limiter.refund(now)
+      if (requestId) ledger.forget(requestId)
+    }
     return reply(out, false)
   }
 
@@ -940,27 +997,19 @@ export function createBridge(o: BridgeOptions): Bridge {
   server.requestTimeout = 60_000
 
   // ---------------------------------------------------------------- WebSocket
-  const wss = new WebSocketServer({
-    noServer: true,
-    maxPayload: 16 * 1024,
-    handleProtocols: protocols => (protocols.has(WS_PROTOCOL) ? WS_PROTOCOL : false),
-  })
-  /** Open sockets per address, for the per-address cap. */
-  const wsOpen = new Map<string, number>()
-  const wsIp = new WeakMap<WebSocket, string>()
-  /** The token each socket came in with, so revoking a device closes its sockets at once. */
-  const wsCred = new WeakMap<WebSocket, Credential>()
-  const unRevoke = devices.onRevoke(c => {
-    let n = 0
-    for (const ws of wss.clients) {
-      const k = wsCred.get(ws)
-      if (!k || !sameCredential(k, c)) continue
-      n++
-      ws.close(REVOKED_CLOSE, 'pairing revoked')
-      // A peer that never answers the close frame is cut off.
-      setTimeout(() => ws.terminate(), 2000).unref()
-    }
-    if (n) log(`pair: closed ${n} WebSocket${n === 1 ? '' : 's'} that used the revoked ${c.kind === 'legacy' ? 'legacy token' : 'device'}`)
+  // The sockets themselves, their caps, presence and heartbeat: ws-hub.ts.
+  const hub = new WsHub({
+    devices,
+    perIp: limits.wsPerIp,
+    total: limits.wsTotal,
+    bufferMax: limits.wsBufferMax,
+    log,
+    greet: () => {
+      const first: ServerMessage[] = [{ type: 'hello', status, build, voice: voice() }]
+      if (lastFleet) first.push({ type: 'fleet', fleet: lastFleet, status })
+      if (persona) first.push({ type: 'conversation', conversation: conversation(), status })
+      return first
+    },
   })
   server.on('upgrade', (req, socket, head) => {
     const ip = normaliseIp(req.socket.remoteAddress)
@@ -984,91 +1033,16 @@ export function createBridge(o: BridgeOptions): Bridge {
       if (!originOk(req)) return refuse(403, 'Forbidden')
       const cred = devices.match(tokenOf(req))
       if (!cred) return refuse(401, 'Unauthorized')
-      const mine = wsOpen.get(ip) ?? 0
-      if (wss.clients.size >= limits.wsTotal) return refuse(503, 'Service Unavailable', `${wss.clients.size} WebSockets are open, the most the bridge takes`, true)
-      if (mine >= limits.wsPerIp) return refuse(503, 'Service Unavailable', `${mine} WebSockets are open from this address, the most one address may have`, true)
-      wss.handleUpgrade(req, socket, head, ws => {
-        // Revoked while the upgrade was in flight, so it is closed before it hears anything.
-        if (!devices.valid(cred)) {
-          log(`ws: ${ip} refused: its token was revoked during the upgrade`)
-          ws.close(REVOKED_CLOSE, 'pairing revoked')
-          return
-        }
-        wsCred.set(ws, cred)
-        devices.seen(cred)
-        wsOpen.set(ip, (wsOpen.get(ip) ?? 0) + 1)
-        wsIp.set(ws, ip)
-        log(`ws: ${ip} connected (${wss.clients.size} open)`)
-        alive.set(ws, true)
-        // Muted until the HUD says otherwise, so a page that never reports is never spoken to unprompted.
-        presence.set(ws, { muted: true, holding: false })
-        ws.on('pong', () => alive.set(ws, true))
-        ws.on('error', err => log(`ws: ${ip}:`, err.message))
-        ws.on('close', () => {
-          const n = (wsOpen.get(ip) ?? 1) - 1
-          if (n > 0) wsOpen.set(ip, n)
-          else wsOpen.delete(ip)
-          log(`ws: ${ip} left (${wss.clients.size} open)`)
-        })
-        ws.on('message', data => onClientMessage(ws, ip, data))
-        push(ws, { type: 'hello', status, build, voice: voice() })
-        if (lastFleet) push(ws, { type: 'fleet', fleet: lastFleet, status })
-        if (persona) push(ws, { type: 'conversation', conversation: conversation(), status })
-      })
+      const full = hub.full(ip)
+      if (full) return refuse(503, 'Service Unavailable', full, true)
+      hub.accept(req, socket, head, ip, cred)
     } catch (err) {
       // Whatever went wrong, an upgrade from an allowed address must not take the bridge down.
       log(`ws: upgrade from ${ip} failed:`, err)
       socket.destroy()
     }
   })
-  // A socket that misses a pong for a whole interval is dropped, so the HUD
-  // reconnects instead of sitting on a dead connection.
-  const alive = new WeakMap<WebSocket, boolean>()
-  const heartbeat = setInterval(() => {
-    for (const ws of wss.clients) {
-      if (alive.get(ws) === false) {
-        ws.terminate()
-        continue
-      }
-      alive.set(ws, false)
-      ws.ping()
-    }
-  }, 15_000)
-
-  const presence = new WeakMap<WebSocket, { muted: boolean; holding: boolean }>()
-  /** Messages from a socket that were not presence; only the first few are logged, so one page cannot flood the log. */
-  const noise = new WeakMap<WebSocket, number>()
-  const NOISE_LOGGED = 3
-  function onClientMessage(ws: WebSocket, ip: string, data: unknown): void {
-    const say = (line: string) => {
-      const n = (noise.get(ws) ?? 0) + 1
-      noise.set(ws, n)
-      if (n <= NOISE_LOGGED) log(`ws: ${ip}: ${line}${n === NOISE_LOGGED ? ' (no more of these logged for this socket)' : ''}`)
-    }
-    let m: ClientMessage
-    try {
-      m = JSON.parse(String(data)) as ClientMessage
-    } catch (err) {
-      say(`unreadable message: ${(err as Error).message}`)
-      return
-    }
-    if (m?.type === 'presence' && typeof m.muted === 'boolean' && typeof m.holding === 'boolean') presence.set(ws, { muted: m.muted, holding: m.holding })
-    else say(`unknown message type ${JSON.stringify((m as { type?: unknown })?.type ?? null).slice(0, 40)}`)
-  }
-  const listeners = () => [...wss.clients].filter(ws => ws.readyState === ws.OPEN && presence.get(ws)?.muted === false)
-  const audience = () => {
-    const ls = listeners()
-    return { listening: ls.length > 0, holding: ls.some(ws => presence.get(ws)?.holding) }
-  }
-
-  const dropped = (ws: WebSocket) => (buffered: number) => log(`ws: ${wsIp.get(ws) ?? 'a client'} is ${Math.round(buffered / 1024)} kB behind, over the ${Math.round(limits.wsBufferMax / 1024)} kB budget; dropped it, and the HUD will reconnect`)
-  function push(ws: WebSocket, m: ServerMessage): void {
-    sendBounded(ws, JSON.stringify(m), limits.wsBufferMax, dropped(ws))
-  }
-  const broadcast = (m: ServerMessage) => {
-    const data = JSON.stringify(m)
-    for (const ws of wss.clients) sendBounded(ws, data, limits.wsBufferMax, dropped(ws))
-  }
+  const broadcast = (m: ServerMessage) => hub.broadcast(m)
 
   // ---------------------------------------------------------------- backend
   const unsubscribe = o.backend.subscribe(u => {
@@ -1087,10 +1061,11 @@ export function createBridge(o: BridgeOptions): Bridge {
     }
   })
 
-  const unVoice = stt.onStatus(() => broadcast({ type: 'voice', voice: voice(), status }))
-  const unPersona = persona?.onStatus(() => broadcast({ type: 'voice', voice: voice(), status })) ?? (() => {})
+  const unVoice = stt.onStatus(() => pushVoice(true))
+  // A character change also changes the voice: apply() selects it before it notifies.
+  const unPersona = persona?.onStatus(() => pushVoice(true)) ?? (() => {})
   // Unprompted lines go only to HUDs that are listening. They are spoken there and never acted on.
-  persona?.setAudience(audience)
+  persona?.setAudience(() => hub.audience())
   // Relays read the dispatcher's answer here, read-only, so nothing under
   // persona/ touches the backend. They share the transcript pool; a busy pool
   // throws, and the relay falls back to the fleet's clips.
@@ -1106,9 +1081,9 @@ export function createBridge(o: BridgeOptions): Bridge {
   const unConversation = persona?.onConversation(c => broadcast({ type: 'conversation', conversation: c, status })) ?? (() => {})
   const unAnnounce =
     persona?.onAnnounce(line => {
-      const to = listeners()
+      const to = hub.listeners()
       log(`persona: speaking up to ${to.length} HUD${to.length === 1 ? '' : 's'}: ${line.source}`)
-      for (const ws of to) push(ws, { type: 'line', line, status })
+      for (const ws of to) hub.push(ws, { type: 'line', line, status })
     }) ?? (() => {})
 
   // ---------------------------------------------------------------- build
@@ -1138,15 +1113,12 @@ export function createBridge(o: BridgeOptions): Bridge {
     fleet: () => lastFleet,
     close: async () => {
       unsubscribe()
-      unRevoke()
       unVoice()
       unPersona()
       unAnnounce()
       unConversation()
       if (o.devReload) unwatchFile(indexHtml)
-      clearInterval(heartbeat)
-      for (const ws of wss.clients) ws.terminate()
-      wss.close()
+      hub.close()
       const closed = new Promise<void>(ok => server.close(() => ok()))
       server.closeAllConnections()
       await closed

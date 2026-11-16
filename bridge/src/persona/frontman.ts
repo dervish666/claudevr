@@ -79,10 +79,17 @@ export function cliArgs(model: string, systemPrompt: string): string[] {
   return ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--model', model, '--system-prompt', systemPrompt, '--tools', '', '--strict-mcp-config', '--setting-sources', 'project,local', '--no-session-persistence']
 }
 
-/** The bridge's environment minus anything that would make the child think it runs inside another Claude Code session. */
+/** Variables that would point the child at an API key or another endpoint instead of the subscription the CLI is logged in to. */
+const API_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']
+
+/**
+ * The bridge's environment minus anything that would make the child think it
+ * runs inside another Claude Code session, and minus any API credentials, so
+ * its turns bill the subscription and never an API key.
+ */
 export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out = { ...env }
-  for (const k of Object.keys(out)) if (/^CLAUDE(CODE|_CODE|_AGENT)/.test(k)) delete out[k]
+  for (const k of Object.keys(out)) if (/^CLAUDE(CODE|_CODE|_AGENT)/.test(k) || API_ENV.includes(k)) delete out[k]
   return out
 }
 

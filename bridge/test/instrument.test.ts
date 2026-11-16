@@ -1,10 +1,17 @@
 // The instrument scene's pure logic, from the client: tile layout, the
-// needs-you rail's overflow, and the reply cards' trigger and queue.
+// needs-you rail's overflow, and the reply cards' trigger and queue; the
+// send card's held line and arming tone; and, from the 2D page, the alarms'
+// announcements and unpairing.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Need, Session, SessionState } from '../../shared/protocol.ts'
-import { MORE_SLOT, REAL_TILES, SUB_ROOM, assignSlots, moreFitsBelow, planSubBoxes, planTiles, slotPose, subBoxExtent, tileExtent, type TileAgent } from '../../client/src/instrument/layout.ts'
+import { MORE_SLOT, REAL_TILES, SUB_LINE_CHARS, SUB_ROOM, SUB_TYPE_CHARS, SUB_W, assignSlots, moreFitsBelow, planSubBoxes, planTiles, slotPose, stateSize, subBoxExtent, subjectChars, tileExtent, type TileAgent } from '../../client/src/instrument/layout.ts'
+import { HELD_LINE, TALKING_LINE, armsNow, countdownLeft, countdownLine, countdownStep } from '../../client/src/instrument/sendcue.ts'
+import { alarmLine, alarmsOf } from '../../client/src/hud/alarms.ts'
+import { unpair } from '../../client/src/pairing.ts'
 import { FINISHED_SHOWN_MS, runTime, shownAgents } from '../../shared/agents.ts'
 import type { AgentInfo } from '../../shared/protocol.ts'
 import { EMPTY_QUEUE, REPLY_MAX, REPLY_TTL_MS, dismissReply, expireReplies, firstLines, nextExpiry, pushReplies, railItems, replyTriggers, snapshot, type ReplyCard } from '../../client/src/instrument/cards.ts'
@@ -252,4 +259,183 @@ test('clock: 24-hour HH:MM and the wait to the next minute', () => {
   assert.equal(hhmm(new Date(2026, 10, 15, 0, 0)), '00:00')
   assert.equal(msToNextMinute(120_000), 60_000)
   assert.equal(msToNextMinute(120_001), 59_999)
+})
+
+// ---------------------------------------------------------------- text that has to fit
+
+/** A string's width in px as uikit lays it out from an MSDF atlas: advances, kerning, and letter spacing per glyph. */
+const atlases = new Map<string, { size: number; chars: Map<string, { id: number; xadvance: number }>; kern: Map<string, number> }>()
+function textWidth(text: string, font: 'rajdhani-600' | 'rajdhani-700' | 'inter-400', px: number, spacingEm = 0): number {
+  let a = atlases.get(font)
+  if (!a) {
+    const j = JSON.parse(readFileSync(join(import.meta.dirname, '../../client/public/fonts', `${font}.json`), 'utf8')) as { info: { size: number }; chars: { id: number; char: string; xadvance: number }[]; kernings?: { first: number; second: number; amount: number }[] }
+    a = { size: j.info.size, chars: new Map(j.chars.map(c => [c.char, c])), kern: new Map((j.kernings ?? []).map(k => [`${k.first}:${k.second}`, k.amount])) }
+    atlases.set(font, a)
+  }
+  let w = 0
+  let prev: { id: number } | null = null
+  for (const ch of text) {
+    const c = a.chars.get(ch)
+    assert.ok(c, `${font} has "${ch}"`)
+    w += (c.xadvance / a.size) * px + spacingEm * px
+    if (prev) w += ((a.kern.get(`${prev.id}:${c.id}`) ?? 0) / a.size) * px
+    prev = c
+  }
+  return w
+}
+
+const STATES: SessionState[] = ['working', 'thinking', 'asking', 'idle', 'failed', 'done', 'unknown']
+
+test('tile state line: every state, read-only or not, fits beside the gauge on one line with the bosun pack\'s 0.1 em labels', () => {
+  // The tile is 300 px with 14 px padding, and the header keeps 82 px clear for the gauge.
+  const room = 300 - 2 * 14 - 82
+  for (const st of STATES)
+    for (const line of [st.toUpperCase(), `${st.toUpperCase()} · READ ONLY`]) {
+      const px = stateSize(line)
+      assert.ok(px >= 14, `${line}: ${px} px is readable`)
+      // 4 px kept spare: the layout rounds to whole pixels, and a line a pixel short wraps.
+      const w = textWidth(line, 'rajdhani-600', px, 0.1)
+      assert.ok(w <= room - 4, `${line} at ${px} px is ${w.toFixed(0)} px, room ${room}`)
+    }
+  assert.equal(stateSize('WORKING'), 22, 'a short line keeps the full size')
+})
+
+test('tile foot: the cut title and the widest age fit side by side, in operator mode and under wider-spaced packs', () => {
+  const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t)
+  // The tile's 272 px inside its padding, less the 10 px gap.
+  const room = 300 - 2 * 14 - 10
+  for (const ls of [0, 0.06, 0.1, 0.2]) {
+    const n = subjectChars(ls)
+    for (const title of ['FIX WEATHER CARD REFRESH', 'UPGRADE THE TEST RUNNER', 'PORT THE GREENHOUSE SHADER TO WEBGL', 'RENAME BILLING FIELDS', 'RATE LIMIT THE WEBHOOK']) {
+      const w = textWidth(clip(title, n), 'rajdhani-600', 16, ls) + textWidth('59M AGO', 'rajdhani-600', 18, ls)
+      assert.ok(w <= room, `spacing ${ls}: "${clip(title, n)}" and its age take ${w.toFixed(0)} px, room ${room}`)
+    }
+  }
+  assert.ok(subjectChars(0) >= 24, 'operator mode keeps a title like "FIX WEATHER CARD REFRESH" whole')
+})
+
+test('sub-agent boxes: 14 px lines and the cut type fit inside the box, with RUNNING beside the type', () => {
+  const inner = SUB_W * 1000 - 2 * 6
+  const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t)
+  for (const d of ['Find who owns the nightly build', 'Rewrite the tide table parser', 'List every caller of loadBerths', 'Port the greenhouse shader to WebGL 2', 'Measure frame time on the trellis scene', 'Grep: owner in build notes', 'Bash: npm test -- tides', 'Edit: shaders/glass.frag', 'Glob: **/textures/*.ts']) {
+    const w = textWidth(clip(d, SUB_LINE_CHARS), 'inter-400', 14)
+    assert.ok(w <= inner, `"${clip(d, SUB_LINE_CHARS)}" is ${w.toFixed(0)} px, room ${inner}`)
+  }
+  for (const t of ['GENERAL-PURPOSE', 'EXPLORE', 'PLAN', 'STATUSLINE-SETUP', 'CODE-REVIEWER']) {
+    const w = textWidth(clip(t, SUB_TYPE_CHARS), 'rajdhani-700', 15, 0.06) + 6 + textWidth('RUNNING', 'rajdhani-700', 14, 0.06)
+    assert.ok(w <= inner, `${clip(t, SUB_TYPE_CHARS)} and RUNNING take ${w.toFixed(0)} px, room ${inner}`)
+  }
+})
+
+// ---------------------------------------------------------------- the send card in instrument mode
+
+test('send card: a held card shows the pause line and drains no arc; an armed one counts down; talking pauses it', () => {
+  const armed = { held: false, sendAt: 10_000, countdownMs: 5000 }
+  const held = { held: true, sendAt: 10_000, countdownMs: 5000 }
+  assert.equal(countdownLine(countdownStep(armed, false, 5_000)), 'SENDS IN 5')
+  assert.equal(countdownLine(countdownStep(armed, false, 9_001)), 'SENDS IN 1')
+  assert.equal(countdownLine(countdownStep(armed, false, 12_000)), 'SENDS IN 0')
+  assert.equal(countdownLine(countdownStep(armed, true, 7_000)), TALKING_LINE)
+  // Held wins over talking, and over a deadline long gone: nothing counts.
+  assert.equal(countdownLine(countdownStep(held, true, 7_000)), HELD_LINE)
+  assert.equal(countdownLine(countdownStep(held, false, 60_000)), HELD_LINE)
+  assert.equal(HELD_LINE, 'PAUSED · SAY SEND OR CANCEL')
+  assert.equal(countdownLeft(held, 7_000), null)
+  assert.equal(countdownLeft(armed, 7_500), 0.5)
+  assert.equal(countdownLeft(armed, 20_000), 0)
+})
+
+test('send card: the arming tone plays once per card, not again when it is held or re-armed', () => {
+  let last: number | null = null
+  const seen: number[] = []
+  const step = (card: { id: number; state: 'armed' | 'sending' | 'sent' | 'cancelled' } | null) => {
+    if (armsNow(last, card)) {
+      last = card!.id
+      seen.push(card!.id)
+    }
+  }
+  step(null)
+  step({ id: 1, state: 'armed' })
+  step({ id: 1, state: 'armed' }) // held, or restarted after he talked: the same card
+  step({ id: 1, state: 'sending' })
+  step({ id: 1, state: 'sent' })
+  step(null)
+  step({ id: 2, state: 'cancelled' })
+  step({ id: 3, state: 'armed' })
+  assert.deepEqual(seen, [1, 3])
+})
+
+// ---------------------------------------------------------------- the 2D page
+
+test('alarms: keyed by kind, and the words a screen reader announces do not change as the seconds tick', () => {
+  const b = { link: 'down' as const, linkError: 'bridge unreachable: connect ECONNREFUSED', fleet: { at: 1_000 } as never, status: { ok: false, name: 'fake', error: 'timed out', lastOkAt: 2_000 } as never, heardAt: 3_000, downSince: 4_000 }
+  const a1 = alarmsOf(b, 10_000)
+  const a2 = alarmsOf(b, 23_000)
+  assert.deepEqual(a1.map(a => a.kind), ['bridge-down', 'backend-down'])
+  assert.deepEqual(a2.map(a => a.kind), a1.map(a => a.kind))
+  assert.deepEqual(a2.map(a => a.text), a1.map(a => a.text), 'announced text unchanged across ticks')
+  assert.notDeepEqual(a2.map(a => a.age), a1.map(a => a.age), 'the age does tick')
+  assert.equal(a1[0]!.text, 'BRIDGE UNREACHABLE: connect ECONNREFUSED. Showing the last fleet seen.')
+  assert.equal(alarmLine(a1[0]!), 'BRIDGE UNREACHABLE: connect ECONNREFUSED. Showing the last fleet seen. Down for 6s, fleet 9s old.')
+  const quiet = alarmsOf({ link: 'open', linkError: null, fleet: null, status: null, heardAt: 1_000, downSince: null }, 20_000)
+  assert.deepEqual(quiet.map(a => [a.kind, a.text]), [['bridge-quiet', 'NO WORD FROM THE BRIDGE.']])
+  assert.deepEqual(alarmsOf({ link: 'open', linkError: null, fleet: null, status: null, heardAt: 19_000, downSince: null }, 20_000), [])
+})
+
+test('unpair: posts the token, and reports why when the bridge did not revoke it', async () => {
+  const real = globalThis.fetch
+  const calls: { url: string; init: RequestInit | undefined }[] = []
+  const answer = (r: () => Response | Promise<Response>) => {
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return r()
+    }) as typeof fetch
+  }
+  try {
+    answer(() => Response.json({ revoked: true }))
+    assert.deepEqual(await unpair('tok-1'), { revoked: true })
+    assert.equal(calls[0]!.url, '/api/unpair')
+    assert.equal(calls[0]!.init?.method, 'POST')
+    assert.equal((calls[0]!.init?.headers as Record<string, string>).authorization, 'Bearer tok-1')
+
+    const legacy = 'the legacy token is shared by every browser that has it; revoke it on the pairing page at https://localhost:8443/pair'
+    answer(() => Response.json({ revoked: false, reason: legacy }))
+    assert.deepEqual(await unpair('tok-2'), { revoked: false, reason: legacy })
+
+    answer(() => Response.json({ error: 'unauthorized' }, { status: 401 }))
+    assert.deepEqual(await unpair('tok-3'), { revoked: false, reason: 'the bridge refused to revoke it: unauthorized' })
+
+    answer(() => {
+      throw new TypeError('Failed to fetch')
+    })
+    assert.deepEqual(await unpair('tok-4'), { revoked: false, reason: 'bridge unreachable: Failed to fetch' })
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test('unpair: a bridge that never answers is given up on, so the page can forget the token', async () => {
+  const real = globalThis.fetch
+  const realTimeout = AbortSignal.timeout
+  let signalled: AbortSignal | undefined
+  // The request hangs until its signal fires, as a dead Wi-Fi link would.
+  globalThis.fetch = ((_url: string, init?: RequestInit) => {
+    signalled = init?.signal ?? undefined
+    return new Promise((_ok, fail) => init?.signal?.addEventListener('abort', () => fail(init.signal!.reason)))
+  }) as typeof fetch
+  const ms: number[] = []
+  AbortSignal.timeout = (n: number) => {
+    ms.push(n)
+    const c = new AbortController()
+    setTimeout(() => c.abort(new DOMException('signal timed out', 'TimeoutError')), 5)
+    return c.signal
+  }
+  try {
+    assert.deepEqual(await unpair('tok-5'), { revoked: false, reason: 'no answer from the bridge in 5 s' })
+    assert.ok(signalled, 'the request carries a signal')
+    assert.deepEqual(ms, [5000])
+  } finally {
+    globalThis.fetch = real
+    AbortSignal.timeout = realTimeout
+  }
 })

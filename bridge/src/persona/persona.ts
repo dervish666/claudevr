@@ -215,7 +215,8 @@ export class Persona {
       } catch (err) {
         this.o.log(`${c.name}: could not change to the ${c.voice} voice: ${(err as Error).message}`)
       }
-    } else this.o.log(`${c.name}: speaks with ${tts.name}'s own voice (the ${c.voice} voice needs the fish provider)`)
+    } else if (tts.name === 'off') this.o.log(`${c.name}: speech is off (tts.provider), so the character is not heard`)
+    else this.o.log(`${c.name}: speaks with ${tts.name}'s own voice (the ${c.voice} voice needs the fish provider)`)
     // A new character starts a new conversation: the old one's words are not its own.
     if (this.cur !== c) this.clearConversation()
     this.cur = c
@@ -406,11 +407,19 @@ export class Persona {
     return true
   }
 
-  /** The dispatcher's newest turn of its own at the send, so a transcript that lags the board is not taken for the answer. */
+  /**
+   * The dispatcher's newest turn of its own at the send, so a transcript that
+   * lags the board is not taken for the answer. The read happens after the
+   * send, and a quick dispatcher may already have answered by then: when the
+   * transcript's last turn of his is the message just sent, the baseline is
+   * the dispatcher's turn before it, so that answer is still relayed.
+   */
   private async readBaseline(a: Awaiting): Promise<void> {
     const turns = await this.turnsOf(a.sessionId)
     if (!turns || this.awaiting !== a) return
-    const own = turns.filter(t => t.role === 'session').at(-1)
+    const lastYou = turns.map(t => t.role).lastIndexOf('you')
+    const sentShown = lastYou >= 0 && turnKey(turns[lastYou]!.text) === turnKey(a.sent)
+    const own = (sentShown ? turns.slice(0, lastYou) : turns).filter(t => t.role === 'session').at(-1)
     a.baseTurn = own ? turnKey(own.text) : null
   }
 
@@ -550,6 +559,9 @@ export class Persona {
     const facts = announcementFacts(events)
     const id = randomBytes(8).toString('hex')
     const line = await this.write(id, c, () => linePrompt(facts, this.latestFleet, Date.now()), facts.plain, { timeoutMs: this.o.lineTimeoutMs, max: 280, sentences: 2 })
+    // Operator mode, another character or a shutdown while the line was
+    // written: nobody asked this character to speak any more.
+    if (this.closed || this.cur !== c) return void this.o.log('speak-up: dropped, the character changed')
     for (const l of this.announceListeners) l(line)
   }
 

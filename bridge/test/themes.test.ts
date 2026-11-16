@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { TtsStatus } from '../../shared/protocol.ts'
-import { ASSET_MAX_BYTES, DEFAULT_THEME, packFor, parseTheme, type ThemeListing } from '../../shared/theme.ts'
+import { ASSET_MAX_BYTES, contrastErrors, contrastRatio, DEFAULT_THEME, packFor, parseTheme, type ThemeListing } from '../../shared/theme.ts'
 import { TODAY, paletteCss, rolesFor } from '../../client/src/instrument/themes/palette.ts'
 import { checkImage, sniffImage, ThemeStore } from '../src/themes.ts'
 import { parseCharacters } from '../src/config.ts'
@@ -95,6 +95,33 @@ test('schema: bad values and unknown keys are refused, each with its path', () =
   assert.match(img.ok ? '' : img.errors[0]!, /needs assets.core/)
   assert.equal(parseTheme([]).ok, false)
   assert.equal(parseTheme({ schema: 2 }).ok, false)
+})
+
+test('contrast: text under 4.5:1 or dim under 3:1 on the plate or the panel is refused, with the path and the ratio', () => {
+  assert.equal(contrastRatio('#000000', '#ffffff').toFixed(2), '21.00')
+  assert.equal(contrastRatio('#777777', '#777777'), 1)
+  // Dark grey text on the default dark plates.
+  const dark = parseTheme({ palette: { text: '#333333' } })
+  assert.ok(!dark.ok)
+  assert.equal(dark.errors.length, 2, dark.errors.join('; '))
+  assert.match(dark.errors[0]!, /^palette\.text: #333333 on palette\.plate #0e1216 has a contrast of 1\.\d\d:1; text needs at least 4\.5:1/)
+  assert.match(dark.errors[1]!, /^palette\.text: #333333 on palette\.panel #0a0e11 /)
+  // Dim needs only 3:1: a mid grey passes as dim and fails as text.
+  const mid = '#6e6e6e'
+  assert.ok(contrastRatio(mid, DEFAULT_THEME.palette.plate) > 3 && contrastRatio(mid, DEFAULT_THEME.palette.plate) < 4.5)
+  assert.ok(parseTheme({ palette: { dim: mid } }).ok)
+  assert.ok(!parseTheme({ palette: { text: mid } }).ok)
+  // A light panel under the default light text: the pair is named by the surface that fails.
+  const pale = parseTheme({ palette: { panel: '#d0d0d0' } })
+  assert.ok(!pale.ok)
+  assert.ok(pale.errors.every(e => / on palette\.panel #d0d0d0 /.test(e)), pale.errors.join('; '))
+  assert.deepEqual(pale.errors.map(e => e.split(':')[0]), ['palette.text', 'palette.dim'])
+  // A colour that is not a colour is reported as such, not measured as well.
+  assert.deepEqual(parseTheme({ palette: { text: 'black' } }), { ok: false, errors: ['palette.text: a colour as #rrggbb, got "black"'] })
+  // The tracked pack still reads.
+  const bosun = parseTheme(JSON.parse(readFileSync(join(BOSUN_DIR, 'theme.json'), 'utf8')))
+  assert.ok(bosun.ok, bosun.ok ? '' : bosun.errors.join('; '))
+  assert.deepEqual(contrastErrors(bosun.theme.palette), [])
 })
 
 test('schema: a pack name is lowercase letters, digits and hyphens; a character name maps to one', () => {

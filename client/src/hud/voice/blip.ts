@@ -27,6 +27,15 @@ export const ui = {
     tone([520, 780], 60, 0.09)
     tone([780, 1040], 70, 0.08, 0.07)
   },
+  /**
+   * A card armed and is counting down: two short ticks on one note, unlike
+   * the rising pair for heard and the two pitches for sent. `at`: seconds
+   * from now, so it can follow the heard tone instead of sounding over it.
+   */
+  armed: (at = 0) => {
+    tone([880, 880], 45, 0.07, at)
+    tone([880, 880], 45, 0.07, at + 0.09)
+  },
   /** A card went out. */
   sent: () => {
     tone([660, 660], 70, 0.09)

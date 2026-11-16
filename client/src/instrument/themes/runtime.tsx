@@ -20,7 +20,15 @@ export interface LoadedTheme {
   theme: Theme
   textures: ThemeTextures
   note: string | null
+  /** What was loaded, as text: the pack's settings, its note and its pictures' sizes. Equal prints draw the same scene. */
+  print: string
 }
+
+/** The print of a load: an edited pack, or another pack under the same name, prints differently. */
+export const printOf = (name: string, theme: Theme, note: string | null, imageBytes: (number | null)[]) => JSON.stringify([name, theme, note, imageBytes])
+
+/** The print of what is on screen now. Kept here, not on the scene, so a session that starts again knows what it ended on. */
+let shownPrint = printOf('default', DEFAULT_THEME, null, [])
 
 const NONE: ThemeTextures = { core: null, emblem: null, panel: null }
 const TRANSITION_MS = 600
@@ -47,14 +55,15 @@ export async function findPack(token: string, name: string): Promise<{ pack: The
   }
 }
 
-async function loadTexture(token: string, name: string, file: string): Promise<Texture> {
+async function loadTexture(token: string, name: string, file: string): Promise<{ texture: Texture; bytes: number }> {
   const r = await fetch(`/themes/${name}/${file}`, { headers: { authorization: `Bearer ${token}` } })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  const url = URL.createObjectURL(await r.blob())
+  const blob = await r.blob()
+  const url = URL.createObjectURL(blob)
   try {
     const t = await new TextureLoader().loadAsync(url)
     t.colorSpace = SRGBColorSpace
-    return t
+    return { texture: t, bytes: blob.size }
   } finally {
     // The decoded image stays with the texture; the blob URL is not needed once it has loaded.
     URL.revokeObjectURL(url)
@@ -63,22 +72,26 @@ async function loadTexture(token: string, name: string, file: string): Promise<T
 
 /** A pack and its pictures, or today's look (with a note when `name` asked for a pack that is not usable). */
 export async function loadTheme(token: string, name: string | null): Promise<LoadedTheme> {
-  if (!name) return { name: 'default', theme: DEFAULT_THEME, textures: NONE, note: null }
+  if (!name) return { name: 'default', theme: DEFAULT_THEME, textures: NONE, note: null, print: printOf('default', DEFAULT_THEME, null, []) }
   const { pack, note } = await findPack(token, name)
-  if (!pack) return { name: 'default', theme: DEFAULT_THEME, textures: NONE, note }
+  if (!pack) return { name: 'default', theme: DEFAULT_THEME, textures: NONE, note, print: printOf('default', DEFAULT_THEME, note, []) }
   const textures: ThemeTextures = { core: null, emblem: null, panel: null }
   const notes = note ? [note] : []
+  const bytes: (number | null)[] = []
   for (const k of ['core', 'emblem', 'panel'] as const) {
     const file = pack.theme.assets[k]
     if (!file) continue
     try {
-      textures[k] = await loadTexture(token, name, file)
+      const got = await loadTexture(token, name, file)
+      textures[k] = got.texture
+      bytes.push(got.bytes)
     } catch (err) {
       console.error(`theme: ${name}/${file} did not load:`, err)
       notes.push(`THEME ${name.toUpperCase()}: ${file} did not load (${err instanceof Error ? err.message : String(err)})`)
+      bytes.push(null)
     }
   }
-  return { name, theme: pack.theme, textures, note: notes[0] ?? null }
+  return { name, theme: pack.theme, textures, note: notes[0] ?? null, print: printOf(name, pack.theme, notes[0] ?? null, bytes) }
 }
 
 const texturesOf = (t: ThemeTextures): Texture[] => [t.core, t.emblem, t.panel].filter((x): x is Texture => x !== null)
@@ -121,6 +134,7 @@ function step(run: Run, batch: LineBatch): boolean {
     if (!run.applied) {
       const n = run.next
       applyTheme(n.name, n.theme, n.textures, n.note)
+      shownPrint = n.print
       batch.look(n.theme.palette.glow, n.theme.palette.glowStrength)
       run.applied = true
     }
@@ -136,9 +150,13 @@ function step(run: Run, batch: LineBatch): boolean {
 
 /**
  * Keeps the scene on the theme `want` names (null: today's look). Lives
- * inside the line work, whose light it drives; renders nothing.
+ * inside the line work, whose light it drives; renders nothing. The pack is
+ * read again each time a character comes on, not only when the pack's name
+ * changes: two characters can share a pack, and a pack can be edited while
+ * its character is off. The change runs only when what was read differs
+ * from what is on screen.
  */
-export function ThemeDriver({ token, want }: { token: string; want: string | null }) {
+export function ThemeDriver({ token, want, character }: { token: string; want: string | null; character: string | null }) {
   const batch = useBatch()
   const run = useRef<Run | null>(null)
   useEffect(() => {
@@ -147,8 +165,8 @@ export function ThemeDriver({ token, want }: { token: string; want: string | nul
       next => {
         // A newer request (or the scene going) has overtaken this one.
         if (!live) return texturesOf(next.textures).forEach(t => t.dispose())
-        // Already on screen, as when a session starts again on the theme it ended on.
-        if (!run.current && next.name === T.name && next.note === T.note) return texturesOf(next.textures).forEach(t => t.dispose())
+        // Already on screen, as when a session starts again on the theme it ended on, or the next character wears the same pack unchanged.
+        if (!run.current && next.print === shownPrint) return texturesOf(next.textures).forEach(t => t.dispose())
         batch.fxColour.set(next.theme.palette.accent).multiplyScalar(0.8)
         run.current = begin(next, run.current)
         log('theme-change', { from: T.name, to: next.name, style: run.current.style, note: next.note })
@@ -158,7 +176,8 @@ export function ThemeDriver({ token, want }: { token: string; want: string | nul
     return () => {
       live = false
     }
-  }, [token, want, batch])
+    // `character` is read only as a trigger: a character coming on reads its pack again.
+  }, [token, want, character, batch])
   useFrame(() => {
     if (run.current && step(run.current, batch)) run.current = null
   })

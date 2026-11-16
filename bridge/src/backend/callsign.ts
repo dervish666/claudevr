@@ -22,6 +22,7 @@
 //     names first; a derived callsign that meets one moves aside.
 
 import type { Fleet } from '../../../shared/protocol.ts'
+import { CONFIRM_CANCEL_WORDS, FILLERS } from '../voice/grammar.ts'
 
 export interface CallsignInput {
   id: string
@@ -42,14 +43,21 @@ export interface CallsignOverride {
 }
 
 /**
- * Words the voice grammar reads as commands or confirmations. A callsign
- * starting with one would make "read Status" or "tell Send to..." ambiguous.
+ * Words the voice grammar reads as commands, confirmations or cancels. A
+ * callsign starting with one would make "read Status" or "tell Send to..."
+ * ambiguous, and worse, saying a session called "Yep" while a card is armed
+ * would send that card. The confirm and cancel words come from the grammar
+ * itself, so the two lists cannot drift apart.
  */
 export const COMMAND_WORDS: ReadonlySet<string> = new Set([
   'status', 'switch', 'tell', 'read', 'cancel', 'send', 'confirm', 'confirmed', 'yes', 'no', 'nope', 'stop', 'abort',
   'go', 'ask', 'message', 'show', 'focus', 'open', 'say', 'what', 'ok', 'okay', 'never', 'scrap', 'forget', 'do', 'to', 'that',
-  'limits', 'usage',
+  'limits', 'usage', 'voice', 'voices', 'character', 'characters', 'be', 'operator', 'plain',
+  ...CONFIRM_CANCEL_WORDS,
 ])
+
+/** A word the grammar drops ("please", "um") or reads as a command: no callsign may start with one. */
+export const reservedWord = (w: string): boolean => COMMAND_WORDS.has(w) || FILLERS.has(w)
 
 /** "ClaudeVR", "claude-vr" and "claude_vr" all compare as "claudevr". */
 export const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -61,7 +69,7 @@ export function overrideFor(s: { id: string; project: string | null }, overrides
 /** Drops leading command words: ["read", "later"] -> ["later"]. Empty when nothing else is left. */
 function withoutCommandWords(w: string[]): string[] {
   let i = 0
-  while (i < w.length && COMMAND_WORDS.has(w[i]!.toLowerCase())) i++
+  while (i < w.length && reservedWord(w[i]!.toLowerCase())) i++
   return w.slice(i)
 }
 
@@ -105,7 +113,7 @@ const VAGUE: ReadonlySet<string> = new Set(['the', 'a', 'an', 'and', 'of', 'for'
  */
 export function titleWord(title: string, not: string): string | null {
   const w = withoutCommandWords(words(title.replace(/^\s*[A-Za-z]{1,3}-?\d+\b[\s:.-]*/, '')))
-  const pick = w.find(x => x.length > 1 && !VAGUE.has(x.toLowerCase()) && !COMMAND_WORDS.has(x.toLowerCase()) && x.toLowerCase() !== not.toLowerCase())
+  const pick = w.find(x => x.length > 1 && !VAGUE.has(x.toLowerCase()) && !reservedWord(x.toLowerCase()) && x.toLowerCase() !== not.toLowerCase())
   if (!pick) return null
   // Initials, said letter by letter: any two letters ("ha" -> "HA"), or three with no vowel ("gtk" -> "GTK").
   return pick.length === 2 || (pick.length === 3 && !/[aeiouy]/i.test(pick)) ? pick.toUpperCase() : speakable(pick)

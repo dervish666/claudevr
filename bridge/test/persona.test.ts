@@ -133,7 +133,7 @@ test('grammar: be X, character X, X mode, by name and by what it is heard as', (
     assert.equal(i.changed, true, t)
   }
   assert.equal(expectKind(say('be bosun', { character: 'bosun' }), 'character').changed, false)
-  assert.equal(expectKind(say('be bosun', { character: 'bosun' }), 'character').say, 'Already bosun.')
+  assert.equal(expectKind(say('be bosun', { character: 'bosun' }), 'character').say, 'Already Bosun.')
 })
 
 test('grammar: operator mode drops the character; characters lists them', () => {
@@ -185,7 +185,7 @@ test('classify: a good answer becomes the same Interpretation the grammar would 
   const tell = validateClassified(parseClassified(`sure: {"kind":"tell","target":${q}} hope that helps`), { grammar: quillWhich(), ids, fleet, now: NOW })
   assert.ok(tell.ok)
   // The message is his words as the grammar took them, never the model's.
-  assert.deepEqual(tell.i, { kind: 'tell', sessionId: 'demo-quill', callsign: 'Quill', text: 'Keep the empty string', viaDispatcher: false, say: 'To Quill: Keep the empty string' })
+  assert.deepEqual(tell.i, { kind: 'tell', sessionId: 'demo-quill', callsign: 'Quill', text: 'Keep the empty string', viaDispatcher: false, viaClassifier: true, say: 'To Quill: Keep the empty string' })
   assert.match(prompt, /Quill \(interactive, asking\)/)
   const st = validateClassified({ kind: 'status', target: null }, { grammar: quillWhich(), ids, fleet, now: NOW })
   assert.ok(st.ok && st.i.kind === 'status')
@@ -227,6 +227,46 @@ test('classify: a tell may not pass over a closer name that cannot be sent to fo
   // A pick the grammar never listed may not skip an unsendable candidate either.
   const noMatch: Interpretation = { kind: 'which', why: 'no-match', heard: 'tal', text: 'Run the tests', candidates: [{ sessionId: 'a-tally', callsign: 'Tally' }], say: '?' }
   assert.equal(validateClassified({ kind: 'tell', target: tali }, { grammar: noMatch, ids, fleet: pair, now: NOW }).ok, false)
+})
+
+test('classify: every tell the classifier makes is marked, so the HUD gives it the full card; the grammar\'s own are not', async () => {
+  const { p, classifier } = persona()
+  const { ids } = classifyPrompt('x', fleet)
+  classifier.reply = () => `{"kind":"tell","target":${ids.indexOf('demo-quill') + 1}}`
+  // From a no-dispatcher which, and from a no-match which: the model chose the target both times.
+  const fromNoDispatcher = expectKind(await p.classify('get quill to keep the empty string', quillWhich(), () => fleet, () => NOW), 'tell')
+  assert.equal(fromNoDispatcher.viaClassifier, true)
+  const noMatch: Interpretation = { kind: 'which', why: 'no-match', heard: 'quilt', text: 'Keep the empty string', candidates: [{ sessionId: 'demo-quill', callsign: 'Quill' }], say: '?' }
+  assert.equal(expectKind(await p.classify('tell quilt to keep the empty string', noMatch, () => fleet, () => NOW), 'tell').viaClassifier, true)
+  // The grammar's tells never pass through the classifier, and carry no mark.
+  const grammarTell = expectKind(say('tell tally to run the tests'), 'tell')
+  assert.equal(grammarTell.viaClassifier, undefined)
+  assert.equal(await p.classify('tell tally to run the tests', grammarTell, () => fleet, () => NOW), grammarTell)
+  p.close()
+})
+
+test('classify: words for a reader session that has gone stay unknown, and the classifier cannot route them to anyone', async () => {
+  const { p, classifier } = persona()
+  const grammar = expectKind(interpret({ transcript: 'run the whole suite again', fleet, context: 'none', focusId: 'gone', characters: CHARS, character: 'bosun', now: NOW }), 'unknown')
+  assert.match(grammar.say, /The session you had open has gone/)
+  const { ids } = classifyPrompt('x', fleet)
+  assert.ok(ids.includes('demo-dispatcher') && ids.includes('t-tally'))
+  for (const target of [ids.indexOf('demo-dispatcher') + 1, ids.indexOf('t-tally') + 1]) {
+    classifier.reply = () => `{"kind":"tell","target":${target}}`
+    assert.equal(await p.classify('run the whole suite again', grammar, () => fleet, () => NOW), grammar, `target ${target}`)
+  }
+  p.close()
+})
+
+test('classify: a cancel while a card is armed never reaches the classifier', async () => {
+  const { p, classifier } = persona()
+  for (const w of ['wait', 'hold on', 'no no no', 'Bosun, wait']) {
+    const g = interpret({ transcript: w, fleet, context: 'confirm', characters: CHARS, character: 'bosun', now: NOW })
+    assert.equal(g.kind, 'cancel', w)
+    assert.equal(await p.classify(w, g, () => fleet, () => NOW), g)
+  }
+  assert.equal(classifier.prompts.length, 0)
+  p.close()
 })
 
 test('classify: the classifier never sees what a session wrote', () => {
@@ -398,6 +438,28 @@ test('speaking up: at most one line per gap, bursts coalesce into one, holding d
   assert.equal(said.length, 3)
 })
 
+test('speaking up: a line still being written when he goes to operator mode is never spoken', async () => {
+  const logs: string[] = []
+  const { p, lines } = persona({ announceGapMs: 50, coalesceMs: 10, quietAfterVoiceMs: 0, audience: () => ({ listening: true, holding: false }), log: (...a) => logs.push(a.join(' ')) })
+  lines.delayMs = 300
+  const said: SpokenLine[] = []
+  p.onAnnounce(l => said.push(l))
+  p.fleetChanged(demo, step(demo, 'demo-garden', 'asking'))
+  await until(() => lines.prompts.length === 1)
+  p.select(null)
+  await wait(500)
+  assert.deepEqual(said, [], 'no line, not even the plain one')
+  assert.ok(logs.includes('speak-up: dropped, the character changed'), logs.join('\n'))
+  // A character switched to mid-line does not speak the old one's line either.
+  p.select('bosun')
+  p.fleetChanged(demo, step(demo, 'demo-quill', 'failed'))
+  await until(() => lines.prompts.length === 2)
+  p.select('purser')
+  await wait(500)
+  assert.deepEqual(said, [])
+  p.close()
+})
+
 test('speaking up: a dead front man still speaks up, with the plain words', async () => {
   const { p, lines } = persona({ announceGapMs: 50, coalesceMs: 10, quietAfterVoiceMs: 0, audience: () => ({ listening: true, holding: false }) })
   lines.dead = 'gone'
@@ -502,6 +564,22 @@ test('character mode by voice: "be bosun" turns it on, answers carry a line, the
   lineFm.reply = () => EVIL
 })
 
+test('character mode with a card armed: the classifier is never asked, whatever the grammar answers', async () => {
+  assert.equal(ps.current()?.name, 'bosun')
+  const before = classFm.prompts.length
+  // A no-match tell, a tell with no message and a bare hesitation: in the
+  // open these would go to the classifier, over an armed card they must not.
+  for (const text of ['tell zorbo run the lint', 'tell harbour', 'um']) {
+    const r = await call(port, 'POST', '/api/interpret', { text, context: 'confirm' })
+    assert.equal(r.status, 200, text)
+    assert.notEqual(r.body.interpretation.viaClassifier, true, text)
+  }
+  assert.equal(classFm.prompts.length, before, 'no classifier prompt while a card is armed')
+  // The same words with no card armed do reach it.
+  await call(port, 'POST', '/api/interpret', { text: 'tell zorbo run the lint', context: 'none' })
+  assert.ok(classFm.prompts.length > before, 'the classifier is asked when no card is armed')
+})
+
 test('no-send guarantee: hostile model output and hostile session text cannot send anything', async () => {
   assert.equal(ps.current()?.name, 'bosun')
   // A session posts a prompt injection, and every model answer is hostile too.
@@ -590,6 +668,9 @@ test('cli: the flags are exactly the measured ones, and the child loses every Cl
   assert.ok(!a.includes('--bare'), '--bare would turn off subscription auth')
   const e = childEnv({ PATH: '/bin', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'x', CLAUDE_AGENT_SDK_VERSION: 'y', CLAUDEVR_PORT: '8446', HOME: '/h' })
   assert.deepEqual(e, { PATH: '/bin', CLAUDEVR_PORT: '8446', HOME: '/h' })
+  // No API credentials or endpoint reach the child, so it bills the subscription and never a key.
+  const api = childEnv({ PATH: '/bin', ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_AUTH_TOKEN: 't', ANTHROPIC_BASE_URL: 'https://proxy.example', ANTHROPIC_MODEL_HINT: 'kept', HOME: '/h' })
+  assert.deepEqual(api, { PATH: '/bin', ANTHROPIC_MODEL_HINT: 'kept', HOME: '/h' })
 })
 
 test('cli: answers turn after turn, logs stderr, and restarts itself once the turn bound is reached', async () => {
@@ -706,12 +787,12 @@ test('character buttons: POST /api/character selects, answers like "be X", and n
   lineFm.reply = () => 'Purser here.'
   const on = await call(port, 'POST', '/api/character', { name: 'Purser' })
   assert.equal(on.status, 200)
-  assert.deepEqual(on.body.interpretation, { kind: 'character', character: 'purser', changed: true, say: 'Character: purser.' })
+  assert.deepEqual(on.body.interpretation, { kind: 'character', character: 'purser', changed: true, say: 'Character: Purser.' })
   assert.equal(ps.current()?.name, 'purser')
   assert.equal(on.body.line.character, 'purser')
   assert.equal((await call(port, 'GET', `/api/line?id=${on.body.line.id}`)).body.text, 'Purser here.', 'the line follows from /api/line, as for speech')
   const again = await call(port, 'POST', '/api/character', { name: 'purser' })
-  assert.deepEqual([again.body.interpretation.changed, again.body.interpretation.say], [false, 'Already purser.'])
+  assert.deepEqual([again.body.interpretation.changed, again.body.interpretation.say], [false, 'Already Purser.'])
   // Operator mode: no character, so no line.
   const off = await call(port, 'POST', '/api/character', { name: null })
   assert.equal(off.status, 200)

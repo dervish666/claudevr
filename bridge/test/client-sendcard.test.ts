@@ -1,10 +1,13 @@
 // The read-back card's send safety, from the client (client/src/hud/voice/sendcard.ts):
 // countdown lengths, the quick-line rule, stale timers, overlapping answers,
 // Cancel during transcription, Send now racing the countdown, holding to
-// talk, and the unknown outcome. Driven by a fake clock; nothing is sent.
+// talk, a card held after a clip that was not understood, the full card for
+// a classifier's tell, and the unknown outcome. Driven by a fake clock;
+// nothing is sent.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { applyArmedRule, REPLACED_DETAIL, route } from '../../client/src/hud/voice/route.ts'
 import {
   DISMISS_MS,
   QUICK_COUNTDOWN_MS,
@@ -12,6 +15,7 @@ import {
   SEND_COUNTDOWN_MS,
   SendCards,
   UNKNOWN_DETAIL,
+  armRequestFor,
   classifySend,
   postSend,
   randomRequestId,
@@ -171,6 +175,21 @@ test('holding to talk blocks the automatic send, and the countdown restarts in f
   assert.equal(r.posts.length, 1)
 })
 
+test('typed words being read keep the card paused even when a clip ends meanwhile; it restarts only when both are done', () => {
+  const r = rig({ leaky: true })
+  r.cards.arm(tell())
+  r.cards.pause('typing', true) // he typed "cancel" and it is on its way to the bridge
+  r.cards.setTalking(true) // and held to talk as well
+  r.cards.setTalking(false) // the clip ends first
+  r.clock.advance(10_000)
+  r.cards.tick()
+  assert.equal(r.posts.length, 0, 'the typed words may be "cancel": nothing sends while they are read')
+  r.cards.pause('typing', false)
+  assert.equal(r.cards.card!.sendAt, r.clock.now() + SEND_COUNTDOWN_MS, 'the countdown starts again in full once nothing is pending')
+  r.clock.advance(SEND_COUNTDOWN_MS)
+  assert.equal(r.posts.length, 1)
+})
+
 test("a timer from before he talked cannot cut the restarted countdown short (F03)", () => {
   // Same card, so only the deadline check stands between the old timer and an early send.
   const r = rig({ leaky: true })
@@ -197,6 +216,99 @@ test('a card armed while he talks waits for him to stop', () => {
   r.cards.setTalking(false)
   r.clock.advance(SEND_COUNTDOWN_MS)
   assert.equal(r.posts.length, 1)
+})
+
+test('a clip that was not understood holds the armed card: it stays unsent after the countdown would have ended (V1)', () => {
+  // Leaky: the countdown's timer still fires after hold() cleared it, so hold must stop it on its own.
+  for (const leaky of [false, true]) {
+    const r = rig({ leaky })
+    const armed = r.cards.arm(tell())!
+    assert.equal(armed.held, false, 'a new card is not held')
+    r.clock.advance(3_000)
+    r.cards.setTalking(true) // he holds to talk, perhaps to say "cancel"
+    r.clock.advance(1_000)
+    assert.equal(r.cards.hold(), true, 'the clip failed to transcribe')
+    r.cards.setTalking(false) // the phase goes to failed: the countdown must not restart
+    r.clock.advance(10_000)
+    r.cards.tick()
+    assert.equal(r.posts.length, 0, `leaky=${leaky}: a held card never sends itself`)
+    assert.equal(r.cards.card!.state, 'armed')
+    assert.equal(r.cards.card!.held, true)
+    assert.equal(r.cards.card!.id, armed.id)
+    // Another clip and another failure leave it held.
+    r.cards.setTalking(true)
+    r.cards.hold()
+    r.cards.setTalking(false)
+    r.clock.advance(60_000)
+    r.cards.tick()
+    assert.equal(r.posts.length, 0)
+  }
+  // With no card armed there is nothing to hold.
+  const n = rig()
+  assert.equal(n.cards.hold(), false)
+  n.cards.arm(tell())
+  n.cards.sendNow()
+  assert.equal(n.cards.hold(), false, 'a card on its way cannot be held')
+})
+
+test('a held card goes once on Send (or a confirm word), and clears its hold as it goes (V1)', async () => {
+  const r = rig()
+  r.cards.arm(tell())
+  r.cards.hold()
+  r.clock.advance(20_000)
+  assert.equal(r.cards.sendNow(), true)
+  assert.equal(r.cards.sendNow(), false, 'a second press does nothing')
+  r.cards.tick()
+  await settle()
+  assert.equal(r.posts.length, 1)
+  assert.equal(r.posts[0]!.held, false)
+  assert.equal(r.cards.card!.state, 'sent')
+})
+
+test('Cancel stops a held card (V1)', () => {
+  const r = rig({ leaky: true })
+  r.cards.arm(tell())
+  r.cards.hold()
+  assert.equal(r.cards.cancel('Cancelled by voice. Nothing sent.'), true)
+  assert.equal(r.cards.card!.state, 'cancelled')
+  assert.equal(r.cards.card!.held, false)
+  r.clock.advance(60_000)
+  r.cards.tick()
+  assert.equal(r.posts.length, 0)
+  assert.equal(r.cards.card, null, 'and it clears itself')
+})
+
+test('a new card replaces a held one and counts down normally (V1)', () => {
+  const r = rig({ leaky: true })
+  const old = r.cards.arm(tell('first'))!
+  r.cards.hold()
+  r.clock.advance(2_000)
+  const fresh = r.cards.arm(tell('second'))!
+  assert.notEqual(fresh.id, old.id)
+  assert.equal(fresh.held, false)
+  r.clock.advance(SEND_COUNTDOWN_MS - 1)
+  r.cards.tick()
+  assert.equal(r.posts.length, 0)
+  r.clock.advance(1)
+  assert.deepEqual(
+    r.posts.map(p => p.text),
+    ['second'],
+    'the new card goes after its own countdown; the held one never does',
+  )
+})
+
+test("a tell whose target the classifier chose always gets the full 5 s card (V6)", () => {
+  const t = { sessionId: 's-tally', callsign: 'Tally', text: 'yes go ahead', viaDispatcher: false }
+  assert.equal(armRequestFor(t, 'quick').quickConfirm, true, 'a grammar tell in a quick character takes the quick line')
+  assert.equal(armRequestFor({ ...t, viaClassifier: true }, 'quick').quickConfirm, false)
+  assert.equal(armRequestFor({ ...t, viaClassifier: false }, 'quick').quickConfirm, true)
+  assert.equal(armRequestFor(t, 'card').quickConfirm, false)
+  assert.equal(armRequestFor(t, null).quickConfirm, false, 'operator mode')
+  assert.equal(armRequestFor({ ...t, viaFocus: true }, null).viaFocus, true)
+  const r = rig()
+  const card = r.cards.arm(armRequestFor({ ...t, viaClassifier: true }, 'quick'))!
+  assert.equal(card.quick, false)
+  assert.equal(card.countdownMs, SEND_COUNTDOWN_MS)
 })
 
 test('Send now racing the countdown and the frame tick sends exactly once', async () => {
@@ -328,7 +440,7 @@ test('each card has its own request id, sent with the message', () => {
 
 test('postSend: what each answer from /api/send means (F08)', async t => {
   t.mock.method(console, 'error', () => {})
-  const card: Card = { id: 1, requestId: 'req-abcdef12', sessionId: 's1', callsign: 'Tally', text: 'hello', viaDispatcher: false, viaFocus: false, sendAt: 0, countdownMs: 5000, quick: false, state: 'sending', detail: null }
+  const card: Card = { id: 1, requestId: 'req-abcdef12', sessionId: 's1', callsign: 'Tally', text: 'hello', viaDispatcher: false, viaFocus: false, sendAt: 0, countdownMs: 5000, quick: false, held: false, state: 'sending', detail: null }
   const seen: { body: string; signal: boolean }[] = []
   const answer =
     (status: number, body: unknown, headers: Record<string, string> = {}): SendFetch =>
@@ -358,4 +470,35 @@ test('postSend: what each answer from /api/send means (F08)', async t => {
   const late = await postSend(throws(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), 'tok', card, 60_000)
   assert.deepEqual(late, { kind: 'unknown', why: 'No answer from the bridge in 60 s.' })
   assert.deepEqual(classifySend(200, true, { said: '' }, null), { kind: 'sent', said: null })
+})
+
+test('the armed-card rule, carried out on a real card: a replacing "who is it for?" cancels it, words that came to nothing hold it', () => {
+  // A new message whose name matched nothing: the old card goes, so the next answer is read as a name.
+  const a = rig({ leaky: true })
+  a.cards.arm(tell('delete the old branch'))
+  const which = route({ kind: 'which', why: 'no-match', heard: 'zorbo', text: 'Run the lint', candidates: [], say: 'Who is it for?' }, null, true)
+  assert.equal(applyArmedRule(which, a.cards), 'replaced')
+  assert.equal(a.cards.card!.state, 'cancelled')
+  assert.equal(a.cards.card!.detail, REPLACED_DETAIL)
+  a.clock.advance(10_000)
+  a.cards.tick()
+  assert.equal(a.posts.length, 0, 'the replaced card never sends')
+
+  // "um" over an armed card: held, and still unsent long after its countdown would have ended.
+  const b = rig({ leaky: true })
+  b.cards.arm(tell())
+  b.cards.setTalking(true)
+  b.cards.setTalking(false) // the clip ended and its words came back as nothing
+  assert.equal(applyArmedRule(route({ kind: 'unknown', say: 'I heard nothing I could use.' }, null, true), b.cards), 'held')
+  b.clock.advance(10_000)
+  b.cards.tick()
+  assert.equal(b.posts.length, 0)
+  assert.equal(b.cards.card!.held, true)
+
+  // A command over an armed card leaves it alone.
+  const c = rig({ leaky: true })
+  c.cards.arm(tell())
+  assert.equal(applyArmedRule(route({ kind: 'status', say: 'All quiet.', lines: [] }, null, true), c.cards), null)
+  c.clock.advance(5_000)
+  assert.equal(c.posts.length, 1, 'the card goes as it would have')
 })

@@ -226,4 +226,14 @@ export class RateLimiter {
     this.at.push(now)
     return null
   }
+
+  /**
+   * Gives back the slot taken at `at`, for a send the backend refused before
+   * anything went out. Never for one whose outcome is unknown: that may have
+   * been delivered, and it counts.
+   */
+  refund(at: number): void {
+    const i = this.at.lastIndexOf(at)
+    if (i >= 0) this.at.splice(i, 1)
+  }
 }

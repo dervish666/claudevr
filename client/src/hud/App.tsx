@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Fleet, Need, Session, SessionState } from '../../../shared/protocol.ts'
-import { autoPair, forgetToken, readToken } from '../pairing.ts'
+import { autoPair, forgetToken, readToken, unpair } from '../pairing.ts'
+import { alarmLine, alarmsOf } from './alarms.ts'
+import { VoiceFocus } from './focus.ts'
 import { Pairing } from './Pairing.tsx'
-import { age, useBridge, useNow, type BridgeState } from './useBridge.ts'
+import { age, useBridge, useNow } from './useBridge.ts'
 import { Reader } from './Reader.tsx'
 import { VoiceDock } from './Voice.tsx'
 import { useVoice } from './voice/useVoice.ts'
@@ -12,8 +14,8 @@ import { TEXT_SIZES, useTextSize, type TextSize } from './textsize.ts'
 import { EnterInstrument, useInstrumentModule } from './InstrumentEntry.tsx'
 import { useThemeCss } from './themeCss.ts'
 
-/** No word from the bridge for this long and the HUD calls its data stale. */
-const STALE_MS = 10_000
+/** How long the unpair link waits for its second press, as the Revoke button on /pair does. */
+const UNPAIR_CONFIRM_MS = 4000
 /** The 3D chunk loads this long after the HUD is up, so it never competes with the HUD's first paint. */
 const INSTRUMENT_PRELOAD_MS = 1500
 const PREVIEW = new URLSearchParams(location.search).get('instrument') === 'preview'
@@ -41,6 +43,8 @@ export function App() {
   // With no stored token, try autoPair (deprecated) before showing a pairing
   // code. Tried once: after "unpair" the code shows instead of pairing straight back.
   const [asked, setAsked] = useState(false)
+  // Why the token may still work after an unpair, shown on the pairing screen that follows.
+  const [unpairNote, setUnpairNote] = useState<string | null>(null)
   useEffect(() => {
     if (token || asked) return
     let live = true
@@ -59,19 +63,24 @@ export function App() {
         <h1>Pairing…</h1>
       </main>
     )
-  if (!token) return <Pairing onPaired={t => setToken(t)} />
+  if (!token) return <Pairing onPaired={t => setToken(t)} reason={unpairNote ?? undefined} />
   return (
     <Hud
       token={token}
-      onUnpair={() => {
+      onUnpair={async () => {
+        const r = await unpair(token)
+        // Forgotten here whatever the bridge said: he asked for this browser to stop using it.
         forgetToken()
+        setUnpairNote(r.revoked ? null : `Unpaired here, but the bridge did not revoke the token, so it may still work: ${r.reason}`)
+        // No autoPair straight back: the code shows instead.
+        setAsked(true)
         setToken(null)
       }}
     />
   )
 }
 
-function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
+function Hud({ token, onUnpair }: { token: string; onUnpair: () => Promise<void> }) {
   const bridge = useBridge(token)
   const [textSize, setTextSize] = useTextSize()
   const now = useNow()
@@ -84,7 +93,6 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
     setOpen(id)
   }
   const immersive = useRef(false)
-  const openId = open && fleet?.sessions.some(s => s.id === open) ? open : null
 
   // Instrument mode keeps its own selection (a tile, or null for the
   // dispatcher). While it is on, voice targets that instead of the reader.
@@ -97,11 +105,14 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   }
   const [enterError, setEnterError] = useState<string | null>(null)
   const instrumentOn = xrActive || PREVIEW
-  const xrFocus = xrSel && fleet?.sessions.some(s => s.id === xrSel) ? xrSel : null
+  // Voice keeps a selection whose session has gone, so the bridge refuses
+  // words meant for it instead of handing them to the dispatcher (focus.ts).
+  const voiceFocus = useRef(new VoiceFocus()).current
+  const fleetIds = fleet ? fleet.sessions.map(s => s.id) : null
   const voice = useVoice({
     token,
     voice: bridge.voice,
-    focusId: instrumentOn ? xrFocus : openId,
+    focusId: voiceFocus.focus(instrumentOn ? xrSel : open, fleetIds),
     onSelect: instrumentOn ? setXrSel : pick,
     onHome: instrumentOn ? () => setXrSel(null) : () => setOpen(null),
     immersive,
@@ -123,7 +134,9 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
 
   // A refused token was revoked, or the bridge made a new legacy one. With
   // autoPair on, fetch the new one and reload; otherwise pair again with a code.
-  const refused = bridge.link === 'unauthorized'
+  // Not while he is unpairing: the revoke closes this page's socket before the answer lands.
+  const [unpairing, setUnpairing] = useState(false)
+  const refused = bridge.link === 'unauthorized' && !unpairing
   useEffect(() => {
     if (!refused) return
     void autoPair().then(t => {
@@ -136,7 +149,7 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
   const alarms = alarmsOf(bridge, now)
   const stale = alarms.length > 0
   const mod = instrument.mod
-  const instrumentProps = { token, bridge, voice, alarms, selected: xrSel, onSelect: setXrSel, immersive, onSessionChange: setXrActive }
+  const instrumentProps = { token, bridge, voice, alarms: alarms.map(alarmLine), selected: xrSel, onSelect: setXrSel, immersive, onSessionChange: setXrActive }
 
   if (PREVIEW)
     return mod ? (
@@ -149,9 +162,11 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
 
   return (
     <div className={`hud${stale ? ' is-stale' : ''}`}>
+      {/* Keyed by kind, and only what is wrong is in the alert: the ticking age beside it is not read out again every second. */}
       {alarms.map(a => (
-        <div key={a} className="alarm" role="alert">
-          {a}
+        <div key={a.kind} className="alarm">
+          <span role="alert">{a.text}</span>
+          {a.age && <span className="alarm-age"> {a.age}</span>}
         </div>
       ))}
       <EnterInstrument
@@ -209,11 +224,40 @@ function Hud({ token, onUnpair }: { token: string; onUnpair: () => void }) {
           {bridge.build?.id ? ` · build ${bridge.build.id.slice(0, 7)}${bridge.build.reload ? ' (dev, reloads itself)' : ''}` : ''}
         </span>
         <a href="/probe">probe</a>
-        <button className="link" onClick={onUnpair}>
-          unpair
-        </button>
+        <UnpairButton
+          onUnpair={() => {
+            // A card must not send while the bridge is asked, or after.
+            voice.cancel('Unpairing. Nothing sent.')
+            setUnpairing(true)
+            return onUnpair()
+          }}
+        />
       </footer>
     </div>
+  )
+}
+
+/** Two presses within 4 s, so one slip of the ray does not unpair the headset. */
+function UnpairButton({ onUnpair }: { onUnpair: () => Promise<void> }) {
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), UNPAIR_CONFIRM_MS)
+    return () => clearTimeout(t)
+  }, [armed])
+  return (
+    <button
+      className={`link${armed ? ' unpair-armed' : ''}`}
+      disabled={busy}
+      onClick={() => {
+        if (!armed) return setArmed(true)
+        setBusy(true)
+        void onUnpair()
+      }}
+    >
+      {busy ? 'Unpairing…' : armed ? 'Unpair? Press again' : 'unpair'}
+    </button>
   )
 }
 
@@ -232,15 +276,6 @@ function TextSizePicker({ value, onPick }: { value: TextSize; onPick: (s: TextSi
       </span>
     </div>
   )
-}
-
-function alarmsOf(b: BridgeState, now: number): string[] {
-  const out: string[] = []
-  if (b.link === 'down') out.push(`BRIDGE UNREACHABLE for ${age(b.downSince, now)}${b.linkError ? `: ${b.linkError.replace(/^bridge unreachable: /, '')}` : ''}. Showing the last fleet seen${b.fleet ? `, ${age(b.fleet.at, now)} old` : ''}.`)
-  else if (b.link === 'connecting' && b.fleet) out.push('RECONNECTING to the bridge. The fleet below may be out of date.')
-  else if (b.link === 'open' && b.heardAt && now - b.heardAt > STALE_MS) out.push(`NO WORD FROM THE BRIDGE for ${age(b.heardAt, now)}.`)
-  if (b.status && !b.status.ok) out.push(`BACKEND UNREACHABLE (${b.status.name}): ${b.status.error ?? 'unknown error'}. ${b.status.lastOkAt ? `Last good read ${age(b.status.lastOkAt, now)} ago.` : 'No good read yet.'}`)
-  return out
 }
 
 const NEED_WORDS: Record<Need['kind'], string> = { question: 'QUESTION', approval: 'APPROVAL', 'needs-sam': 'NEEDS YOU', failed: 'FAILED' }

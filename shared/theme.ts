@@ -219,6 +219,38 @@ class Reader {
   }
 }
 
+// ---------------------------------------------------------------- contrast
+
+/** WCAG 2 relative luminance of a #rrggbb colour. */
+function luminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map(i => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
+}
+
+/** The WCAG contrast ratio of two #rrggbb colours, from 1 (the same) to 21 (black on white). */
+export function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+  return (hi! + 0.05) / (lo! + 0.05)
+}
+
+/** The least contrast text and dim text need against both surfaces they sit on: WCAG AA for body text, and for large or secondary text. */
+export const MIN_CONTRAST = { text: 4.5, dim: 3 } as const
+
+/** Why a palette's text would be hard to read on its own plates, one line per pair; empty when it reads. */
+export function contrastErrors(p: Pick<Palette, 'text' | 'dim' | 'plate' | 'panel'>): string[] {
+  const out: string[] = []
+  for (const fg of ['text', 'dim'] as const) {
+    for (const bg of ['plate', 'panel'] as const) {
+      const ratio = contrastRatio(p[fg], p[bg])
+      if (ratio < MIN_CONTRAST[fg]) out.push(`palette.${fg}: ${p[fg]} on palette.${bg} ${p[bg]} has a contrast of ${ratio.toFixed(2)}:1; ${fg} needs at least ${MIN_CONTRAST[fg]}:1 against the plate and the panel`)
+    }
+  }
+  return out
+}
+
 const kind = (v: unknown) => (Array.isArray(v) ? 'a list' : v === null ? 'null' : typeof v)
 const show = (v: unknown) => {
   const s = JSON.stringify(v)
@@ -227,8 +259,9 @@ const show = (v: unknown) => {
 
 /**
  * A theme.json's contents as a Theme, defaults filled in, or every problem
- * with it. Only the shape is checked here; whether the listed images exist
- * and are small enough is the bridge's business.
+ * with it. The shape is checked here, and that text and dim text read on the
+ * plate and the panel (MIN_CONTRAST); whether the listed images exist and
+ * are small enough is the bridge's business.
  */
 export function parseTheme(raw: unknown): ThemeParse {
   const r = new Reader()
@@ -243,6 +276,8 @@ export function parseTheme(raw: unknown): ThemeParse {
   for (const k of COLOUR_KEYS) palette[k] = r.colour(p[k], `palette.${k}`, d.palette[k])
   palette.glow = p.glow === null ? null : r.colour(p.glow, 'palette.glow', '') || null
   palette.glowStrength = r.number(p.glowStrength, 'palette.glowStrength', d.palette.glowStrength, 0, 2)
+  // Measured only on colours that parsed: a bad one stands in as the default, and its error already says so.
+  if ((['text', 'dim', 'plate', 'panel'] as const).every(k => p[k] === undefined || (typeof p[k] === 'string' && HEX.test(p[k])))) r.errors.push(...contrastErrors(palette))
 
   const ty = r.section(top.typography, 'typography', ['heading', 'label', 'body'])
   const role = (v: unknown, path: string, def: TextRole): TextRole => {

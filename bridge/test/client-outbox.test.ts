@@ -1,11 +1,12 @@
 // Instrument mode's log queue, from the client (client/src/instrument/outbox.ts):
 // batches fit the bridge's 64 KiB body and 400-event limits, an oversized
-// event is cut to a stand-in, and a body the bridge refuses is split or
-// dropped, never sent again unchanged.
+// event is cut to a stand-in, a body the bridge refuses is split or
+// dropped, never sent again unchanged, and an answer settles exactly the
+// batch it was for, however the queue moved meanwhile.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BATCH, BODY_BUDGET, BODY_MAX, Outbox, encodeEvent } from '../../client/src/instrument/outbox.ts'
+import { BATCH, BODY_BUDGET, BODY_MAX, Outbox, QUEUE_MAX, encodeEvent } from '../../client/src/instrument/outbox.ts'
 
 const bytes = (s: string) => Buffer.byteLength(s, 'utf8')
 
@@ -108,4 +109,72 @@ test('a failure that may pass (no network, 5xx) keeps the batch for the next flu
   up = true
   await r.box.flush()
   assert.equal(r.box.size, 0)
+})
+
+test('a full queue dropping entries while a batch is on its way: the answer settles that batch only (V5)', async () => {
+  // The bridge holds the first POST until the test lets it go; later ones answer at once.
+  let release!: () => void
+  const held = new Promise<void>(r => (release = r))
+  const bodies: string[] = []
+  let posts = 0
+  const box = new Outbox({
+    post: async body => {
+      bodies.push(body)
+      if (posts++ === 0) await held
+      return { ok: true, status: 200 }
+    },
+    report: () => {},
+    now: () => 0,
+  })
+  for (let i = 0; i < QUEUE_MAX; i++) box.push({ type: 'e', i })
+  const flushing = box.flush()
+  await new Promise<void>(r => setImmediate(r))
+  assert.equal(bodies.length, 1, 'the first batch is on its way')
+  const inFlight = (JSON.parse(bodies[0]!) as { events: { i: number }[] }).events.map(e => e.i)
+  assert.equal(inFlight.length, BATCH)
+  // 300 more arrive meanwhile. The queue drops its 300 oldest that are not on their way.
+  for (let i = QUEUE_MAX; i < QUEUE_MAX + 300; i++) box.push({ type: 'e', i })
+  release()
+  await flushing
+  assert.equal(box.size, 0)
+  const sent = bodies.flatMap(b => (JSON.parse(b) as { events: { type: string; i?: number; count?: number }[] }).events)
+  const markers = sent.filter(e => e.type === 'telemetry-dropped')
+  assert.deepEqual(
+    markers.map(m => m.count),
+    [300],
+    'the marker is present and counts exactly what was lost',
+  )
+  const delivered = sent.filter(e => e.type === 'e').map(e => e.i!)
+  const range = (from: number, to: number) => Array.from({ length: to - from }, (_, k) => from + k)
+  assert.deepEqual(
+    delivered,
+    [...range(0, BATCH), ...range(BATCH + 300, QUEUE_MAX + 300)],
+    'the batch in flight went once, the 300 after it were the ones dropped, and nothing the queue kept was taken out in place of the batch',
+  )
+})
+
+test('a marker dropped from a full queue passes its count on (V5)', async () => {
+  const bodies: string[] = []
+  const box = new Outbox({
+    post: async b => {
+      bodies.push(b)
+      return { ok: true, status: 200 }
+    },
+    report: () => {},
+    now: () => 0,
+  })
+  // Each push past the limit drops the marker at the front along with the oldest event.
+  for (let i = 0; i < QUEUE_MAX + 15; i++) box.push({ type: 'e', i })
+  assert.equal(box.size, QUEUE_MAX + 1, 'QUEUE_MAX events and one marker')
+  await box.flush()
+  const events = bodies.flatMap(b => (JSON.parse(b) as { events: { type: string; i?: number; count?: number }[] }).events)
+  assert.deepEqual(
+    events.filter(e => e.type === 'telemetry-dropped').map(e => e.count),
+    [15],
+    'one marker, for all 15 dropped',
+  )
+  assert.deepEqual(
+    events.filter(e => e.type === 'e').map(e => e.i),
+    Array.from({ length: QUEUE_MAX }, (_, k) => k + 15),
+  )
 })

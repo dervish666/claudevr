@@ -263,8 +263,12 @@ export type Interpretation =
   | { kind: 'switch'; sessionId: string; callsign: string; say: string }
   /** "Dispatcher" on its own: drop the selection and go back to the dispatcher, the Core's home. */
   | { kind: 'dispatcher'; say: string }
-  /** `viaFocus`: no session was named, so it goes to the one open in the reader. */
-  | { kind: 'tell'; sessionId: string; callsign: string; text: string; viaDispatcher: boolean; viaFocus?: boolean; say: string }
+  /**
+   * `viaFocus`: no session was named, so it goes to the one open in the reader.
+   * `viaClassifier`: the character mode classifier chose the target or the
+   * kind, not the grammar; the HUD always gives such a card the full 5 s.
+   */
+  | { kind: 'tell'; sessionId: string; callsign: string; text: string; viaDispatcher: boolean; viaFocus?: boolean; viaClassifier?: boolean; say: string }
   /** Who is it for? `text` waits for the answer; a `target` reply supplies it. */
   | { kind: 'which'; why: 'ambiguous' | 'no-match' | 'no-dispatcher'; heard: string | null; text: string; candidates: Candidate[]; say: string }
   | { kind: 'target'; sessionId: string; callsign: string; say: string }

@@ -15,7 +15,7 @@ import type { Session } from '../../../shared/protocol.ts'
 import { age } from '../hud/useBridge.ts'
 import { second } from './clock.ts'
 import { arc, placed } from './Core.tsx'
-import { CORE_Y, LANE_GAP, MORE_ID, ROW_DY, SUB_GAP, SUB_MORE_H, SUB_W, TILE_H, TILE_W, assignSlots, columnKey, moreFitsBelow, planTiles, slotPose } from './layout.ts'
+import { CORE_Y, LANE_GAP, MORE_ID, ROW_DY, SUB_GAP, SUB_MORE_H, SUB_W, TILE_H, TILE_W, assignSlots, columnKey, moreFitsBelow, planTiles, slotPose, stateSize, subjectChars } from './layout.ts'
 import { LaneBoxes, LaneLines, laneOf, laneShape, type LaneView } from './SubAgents.tsx'
 import { useBatch, useLines } from './linework.tsx'
 import { RING_R, RING_Z } from './Core.tsx'
@@ -23,7 +23,7 @@ import { addFrame, arcGeometry, rectsGeometry } from './shapes.tsx'
 import { useSettings } from './settings.ts'
 import { countRender } from './telemetry.ts'
 import { fit } from './text.ts'
-import { C, DEG, FONTS, STATE_WORDS, X, corner, levelColour, plateOf, stateColour } from './theme.ts'
+import { C, DEG, FONTS, STATE_WORDS, T, X, corner, levelColour, plateOf, stateColour } from './theme.ts'
 import { usePartKey } from './themes/parts.tsx'
 
 const SLOTS_KEY = 'claudevr.instrument.slots'
@@ -92,11 +92,16 @@ interface View {
 
 const letters = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-/** The session's title for the tile's foot, cut to fit beside the age. Empty when it only repeats the callsign. */
+/**
+ * The session's title for the tile's foot, cut to fit beside the age under
+ * the theme's label spacing: the age never wraps, so a title too long would
+ * push it off the tile. Empty when it only repeats the callsign.
+ */
 function subjectOf(title: string, callsign: string): string {
   const t = title.trim()
   if (!t || letters(t) === letters(callsign)) return ''
-  return (t.length > 27 ? `${t.slice(0, 26).trimEnd()}…` : t).toUpperCase()
+  const n = subjectChars(T.theme.typography.label.letterSpacing)
+  return (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t).toUpperCase()
 }
 
 function viewOf(it: TileItem, selected: boolean): View {
@@ -168,7 +173,9 @@ const TileBody = memo(
           <Text fontFamily="rajdhani" fontWeight="bold" fontSize={v.title.length <= 8 ? 38 : v.title.length <= 11 ? 31 : 26} lineHeight={1.05} color={C.white} wordBreak="keep-all">
             {fit(v.title.length > 15 ? `${v.title.slice(0, 14)}…` : v.title, 'rajdhani-700')}
           </Text>
-          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={22} color={v.colour}>
+          {/* One line, beside the gauge: a longer state line ("THINKING · READ ONLY") steps down a size instead of wrapping,
+              and at 16 px the longest fits the 190 px with a pack's 0.1 em label spacing (layout.ts). */}
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={stateSize(v.stateLine)} color={v.colour} wordBreak="keep-all">
             {fit(v.stateLine, 'rajdhani-600')}
           </Text>
         </Container>
@@ -184,7 +191,8 @@ const TileBody = memo(
           <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={16} color={C.body} flexShrink={1} wordBreak="keep-all">
             {fit(v.subject, 'rajdhani-600')}
           </Text>
-          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted} flexShrink={0}>
+          {/* keep-all: never "0S" over "AGO", which a pack's letter spacing caused when the row rounded a pixel short. */}
+          <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={18} color={C.muted} flexShrink={0} wordBreak="keep-all">
             {ageText}
           </Text>
         </Container>
@@ -194,7 +202,7 @@ const TileBody = memo(
             <Text fontFamily="rajdhani" fontWeight="bold" fontSize={v.pct === null ? 20 : 24} color={v.pct === null ? C.muted : levelColour(v.pct)}>
               {v.pct === null ? 'n/a' : `${v.pct}%`}
             </Text>
-            <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={13} color={C.muted}>
+            <Text fontFamily="rajdhani" fontWeight="semi-bold" fontSize={16} color={C.muted}>
               CTX
             </Text>
           </Container>

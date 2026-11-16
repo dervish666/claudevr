@@ -17,6 +17,22 @@ const DEG = Math.PI / 180
 export const CORE_Y = -0.12
 export const TILE_W = 0.3
 export const TILE_H = 0.19
+/**
+ * A tile's state line, in px: 22, or smaller for a long one ("THINKING ·
+ * READ ONLY"), so it stays on one line in the 190 px beside the context
+ * gauge even with a pack's 0.1 em label spacing.
+ */
+export const stateSize = (line: string) => (line.length <= 12 ? 22 : line.length <= 16 ? 19 : 16)
+/**
+ * How much of a session's title the tile's foot has room for, in
+ * characters. The foot is 262 px less the age beside it ("59M AGO" at
+ * 18 px), with 4 px spare, in 16 px capitals averaging 7.75 px; a pack's
+ * label spacing widens both, so a wider-spaced pack gets fewer.
+ */
+export function subjectChars(labelSpacingEm: number): number {
+  const room = 262 - 7 * (9.2 + 18 * labelSpacingEm) - 4
+  return Math.max(8, Math.floor(room / (7.75 + 16 * labelSpacingEm)))
+}
 /** Outer columns draw at this scale of an inner tile. */
 export const OUTER_SCALE = 0.88
 export const TILE_DIST = 1.25
@@ -32,6 +48,14 @@ export const SUB_W = TILE_W / 2
 /** Three boxes and two gaps make a tile's height. */
 export const SUB_GAP = 0.005
 export const SUB_H = (TILE_H - 2 * SUB_GAP) / 3
+/**
+ * What a box's text is cut to, in characters. Its rows are 14 px and more
+ * (about 0.64 degrees at 1.25 m) in the 138 px inside its padding: the type
+ * leaves room for "RUNNING" beside it, and a line of Inter at 14 px holds
+ * about 18 (both measured from the atlases in the tests).
+ */
+export const SUB_TYPE_CHARS = 8
+export const SUB_LINE_CHARS = 18
 /** The "+N" box's height, under the lane. */
 export const SUB_MORE_H = 0.024
 /** From the tile's edge to the lane. */

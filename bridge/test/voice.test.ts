@@ -337,6 +337,30 @@ test('HelperStt: a model that fails to load is reported with its reason', async 
   }
 })
 
+test('HelperStt: a helper that never says ready is killed at the load deadline and restarted', async () => {
+  const spawned: ReturnType<typeof spawn>[] = []
+  const silent = () => {
+    // Loads nothing and says nothing, as a helper stuck in an import would.
+    const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    spawned.push(c)
+    return c
+  }
+  const logs: string[] = []
+  const h = new HelperStt({ engine: 'fake', python: 'x', script: 'x', model: 'm', cacheDir: null, loadTimeoutMs: 1000, log: (...a) => logs.push(a.join(' ')), spawnHelper: silent })
+  try {
+    assert.equal(h.status().state, 'loading')
+    await until(() => h.status().state === 'unavailable' && /restarting/.test(h.status().error ?? ''), 4000)
+    assert.equal(h.status().error, 'the fake model did not load in 1 s; restarting in 1 s')
+    assert.equal(spawned[0]!.signalCode, 'SIGKILL')
+    assert.ok(logs.some(l => l === 'the fake model did not load in 1 s; killing the helper'), logs.join('\n'))
+    await assert.rejects(h.transcribe(Buffer.alloc(10)), SttUnavailable)
+    // The backoff starts it again, and the new one gets its own deadline.
+    await until(() => spawned.length === 2 && h.status().state === 'loading', 3000)
+  } finally {
+    h.close()
+  }
+})
+
 test('HelperStt: a missing Python is reported, not retried', () => {
   const h = new HelperStt({ engine: 'parakeet', python: '/nonexistent/python', script: 'x', model: 'm', cacheDir: null, log: () => {} })
   assert.equal(h.status().state, 'unavailable')

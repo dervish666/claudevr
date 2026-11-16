@@ -11,11 +11,11 @@ import type { AddressInfo } from 'node:net'
 import WebSocket from 'ws'
 import type { Fleet, SessionTranscript, TtsStatus } from '../../shared/protocol.ts'
 import { appendRotating, createBridge, sendBounded, type Bridge, type BridgeOptions } from '../src/server.ts'
-import { Busy, KeyedBudget, Pool } from '../src/gate.ts'
+import { Busy, KeyedBudget, Pool, RateLimiter } from '../src/gate.ts'
 import { FakeAdapter } from '../src/backend/fake.ts'
 import { makeCert } from '../src/cert.ts'
 import type { SttProvider } from '../src/voice/stt.ts'
-import type { TtsProvider } from '../src/voice/tts.ts'
+import { FishTts, type TtsProvider } from '../src/voice/tts.ts'
 
 const FIX = join(import.meta.dirname, '..', '..', 'fixtures')
 const FLEET = JSON.parse(readFileSync(join(FIX, 'demo-fleet.json'), 'utf8')) as Fleet
@@ -208,6 +208,108 @@ test('send: an outcome the bridge cannot know is a 5xx outside 501 and 502, with
   assert.equal(ok.body.outcome, undefined)
 })
 
+test('send: a refusal that sent nothing gives its rate limit slot back; an unknown outcome keeps it', async () => {
+  const { port, backend } = await start({ sendsPerMinute: 5 })
+  // No such session, and a session with no send route: refused before anything went out.
+  for (let i = 0; i < 6; i++) assert.equal((await call(port, 'POST', '/api/send', { body: { sessionId: i % 2 ? 'nobody' : 'demo-lantern', text: 'x', requestId: `card-refused-${i}` } })).status, 404, `refusal ${i}`)
+  const good = await call(port, 'POST', '/api/send', { body: { sessionId: 'demo-harbour', text: 'run the tests' } })
+  assert.equal(good.status, 200, JSON.stringify(good.body))
+  assert.equal(backend.sent.length, 1)
+  // A 504 may have been delivered, so it counts: four of those and the good one fill the minute.
+  backend.setDown('connection dropped (test)')
+  for (let i = 0; i < 4; i++) assert.equal((await call(port, 'POST', '/api/send', { body: { sessionId: 'demo-quill', text: `maybe ${i}` } })).status, 504)
+  backend.setDown(null)
+  const limited = await call(port, 'POST', '/api/send', { body: { sessionId: 'demo-harbour', text: 'one too many' } })
+  assert.equal(limited.status, 429)
+})
+
+test('unit: the rate limiter gives back exactly the slot it is asked to', () => {
+  const r = new RateLimiter(2, 10)
+  assert.equal(r.take(1000), null)
+  assert.equal(r.take(2000), null)
+  assert.ok(r.take(3000))
+  r.refund(2000)
+  assert.equal(r.take(3000), null, 'the refunded slot is free again')
+  assert.ok(r.take(3500))
+  r.refund(9999)
+  assert.ok(r.take(3600), 'a slot never taken gives nothing back')
+})
+
+// ---------------------------------------------------------------- bodies
+
+/** A request whose body is sent in chunks with no content-length, so only the bridge's own count can stop it. */
+function chunked(port: number, path: string, body: Buffer): Promise<{ status: number; body: any }> {
+  return new Promise((ok, fail) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'POST', rejectUnauthorized: false, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' } }, res => {
+      const chunks: Buffer[] = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => ok({ status: res.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null') }))
+    })
+    req.on('error', fail)
+    for (let i = 0; i < body.length; i += 8192) req.write(body.subarray(i, i + 8192))
+    req.end()
+  })
+}
+
+test('bodies: a JSON body over 64 KiB gets a 413 the client can read, declared or not, and nothing is sent or logged', async () => {
+  const { port, backend, probeLog } = await start()
+  const pad = 'x'.repeat(70 * 1024)
+  const send = Buffer.from(JSON.stringify({ sessionId: 'demo-harbour', text: pad }))
+  const events = Buffer.from(JSON.stringify({ events: [{ type: 'frames', pad }] }))
+  for (const [path, raw] of [['/api/send', send], ['/api/probe?log=instrument', events], ['/api/probe', events]] as const) {
+    const declared = await call(port, 'POST', path, { raw })
+    assert.equal(declared.status, 413, `${path} with a content-length`)
+    assert.equal(declared.body.error, 'body over 65536 bytes')
+    const streamed = await chunked(port, path, raw)
+    assert.equal(streamed.status, 413, `${path} chunked`)
+    assert.equal(streamed.body.error, 'body over 65536 bytes')
+  }
+  assert.deepEqual(backend.sent, [])
+  assert.equal(existsSync(probeLog), false)
+  assert.equal(existsSync(join(dir, 'instrument.log')) && readFileSync(join(dir, 'instrument.log'), 'utf8').includes(pad.slice(0, 100)), false)
+  // The connection is still good for the next request, and a body under the limit is taken.
+  assert.equal((await call(port, 'POST', '/api/send', { body: { sessionId: 'demo-harbour', text: 'small' } })).status, 200)
+  assert.equal((await chunked(port, '/api/send', Buffer.from(JSON.stringify({ sessionId: 'demo-harbour', text: 'y'.repeat(60 * 1024) })))).status, 200)
+  assert.equal(backend.sent.length, 2)
+})
+
+// ---------------------------------------------------------------- voice status
+
+test('voice status: a fish.audio failure is pushed to open HUDs once, with the fallback, and again when it recovers', async () => {
+  let failing = true
+  const fetch = (async () => (failing ? new Response('{"message":"no credit"}', { status: 402 }) : new Response(Buffer.alloc(4000, 1), { status: 200 }))) as typeof globalThis.fetch
+  const fallback: TtsProvider = { name: 'stand-in', status: (): TtsStatus => ({ provider: 'stand-in', ok: true, error: null }), speak: async () => ({ audio: Buffer.from('x'), mime: 'audio/webm' }) }
+  const tts = new FishTts({ apiKey: 'k', keyHint: '', model: 's2.1-pro', voices: [{ name: 'atlas', id: '1'.repeat(32), heardAs: [] }, { name: 'juniper', id: '2'.repeat(32), heardAs: [] }], voice: 'atlas', maxChars: 600, fetch, fallback, log: () => {} })
+  const { port } = await start({ tts })
+  const ws = await connect(port)
+  assert.ok(ws instanceof WebSocket)
+  const voices: any[] = []
+  ws.on('message', m => {
+    const d = JSON.parse(String(m))
+    if (d.type === 'voice') voices.push(d)
+  })
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal((await call(port, 'POST', '/api/speak', { body: { text: 'one' } })).status, 200)
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal(voices.length, 1)
+  assert.match(voices[0].voice.tts.provider, /^stand-in; fish\.audio failed: HTTP 402: the account is out of credit$/)
+  // Still failing, the same state: nothing more is pushed.
+  for (const text of ['two', 'three']) assert.equal((await call(port, 'POST', '/api/speak', { body: { text } })).status, 200)
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal(voices.length, 1, 'only a change is pushed, not every request')
+  failing = false
+  assert.equal((await call(port, 'POST', '/api/speak', { body: { text: 'four' } })).status, 200)
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal(voices.length, 2)
+  assert.equal(voices[1].voice.tts.provider, 'fish.audio (atlas, s2.1-pro)')
+  // A voice changed by speech is pushed too.
+  assert.equal((await call(port, 'POST', '/api/interpret', { body: { text: 'voice juniper', context: 'none' } })).body.interpretation.voice, 'juniper')
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal(voices.length, 3)
+  assert.equal(voices[2].voice.tts.provider, 'fish.audio (juniper, s2.1-pro)')
+  ws.close()
+})
+
 // ---------------------------------------------------------------- per-client budgets
 
 test('budgets: past the per-client request budget an address gets 429 with the wait', async () => {
@@ -264,7 +366,34 @@ test('clips: a clip waits for a slot before it is even read, and past the queue 
   assert.equal(r.status, 503)
   assert.equal(r.body.transcript.reason, 'busy')
   assert.match(r.body.transcript.error, /busy: 1 clips running and 0 waiting/)
+  assert.equal(r.headers['retry-after'], '2', 'the same wait as the transcript and speech pools')
   slow.destroy()
+})
+
+test('clips: an upload abandoned while it waited for a slot gives the slot back', async () => {
+  const stt: SttProvider = { name: 'stub', status: () => ({ provider: 'stub', state: 'ready', error: null, model: null, loadMs: 1 }), onStatus: () => () => {}, transcribe: async () => ({ text: 'status', ms: 1 }), close: () => {} }
+  const { port } = await start({ stt, limits: { clips: [1, 1] } })
+  const open = (n: number) => {
+    const r = request({ host: '127.0.0.1', port, path: '/api/transcribe', method: 'POST', rejectUnauthorized: false, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'audio/webm', 'content-length': String(n) } })
+    r.on('error', () => {})
+    r.on('response', res => res.resume())
+    return r
+  }
+  // The first upload holds the one slot; the second waits in the queue and is then abandoned.
+  const first = open(20)
+  first.write(Buffer.alloc(10))
+  await new Promise(r => setTimeout(r, 100))
+  const queued = open(5000)
+  queued.write(Buffer.alloc(10))
+  await new Promise(r => setTimeout(r, 100))
+  queued.destroy()
+  await new Promise(r => setTimeout(r, 100))
+  // The first one finishes, so the abandoned one gets the slot and must give it back.
+  first.end(Buffer.alloc(10))
+  await new Promise(r => setTimeout(r, 200))
+  const fresh = await Promise.race([call(port, 'POST', '/api/transcribe', { raw: Buffer.alloc(10), type: 'audio/webm' }), new Promise<null>(r => setTimeout(() => r(null), 3000))])
+  assert.ok(fresh, 'a fresh clip gets an answer instead of hanging behind a lost slot')
+  assert.notEqual(fresh.status, 503, 'and is not refused as busy')
 })
 
 test('speech: only a few requests are rendered at once; past the queue it is 503', async () => {

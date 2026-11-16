@@ -244,8 +244,10 @@ test('transcript: needs the token, returns turns for a known session, 404 for an
 })
 
 test('send: rate limited after the per-minute allowance', async () => {
-  // Three a minute; the test above used two slots (ok and unknown).
-  const third = await call('POST', '/api/send', { token: TOKEN, body: { sessionId: 'demo-quill', text: 'one more' } })
+  // Three a minute; the test above used one. Its send to an unknown session was refused before it went out, so that slot came back.
+  const second = await call('POST', '/api/send', { token: TOKEN, body: { sessionId: 'demo-quill', text: 'one more' } })
+  assert.equal(second.status, 200)
+  const third = await call('POST', '/api/send', { token: TOKEN, body: { sessionId: 'demo-quill', text: 'and one more' } })
   assert.equal(third.status, 200)
   const limited = await call('POST', '/api/send', { token: TOKEN, body: { sessionId: 'demo-quill', text: 'too many' } })
   assert.equal(limited.status, 429)

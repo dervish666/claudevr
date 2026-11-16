@@ -38,6 +38,34 @@ export function forgetToken(): void {
   }
 }
 
+/** What the bridge said to an unpair: revoked, or why not (the shared legacy token, a refusal, no answer). */
+export type UnpairResult = { revoked: true } | { revoked: false; reason: string }
+
+/**
+ * Asks the bridge to revoke this browser's token, so it stops working for
+ * anyone who has it and the device leaves the pairing page's list. The
+ * caller forgets the token whatever the answer; a reason means the token
+ * may still work.
+ */
+/** How long unpair waits for the bridge, answer and body included, before the page forgets the token anyway. */
+export const UNPAIR_TIMEOUT_MS = 5000
+
+export async function unpair(token: string): Promise<UnpairResult> {
+  try {
+    // The signal covers reading the reply too, so a connection that stops
+    // mid-answer cannot keep the token stored behind a disabled button.
+    const signal = AbortSignal.timeout(UNPAIR_TIMEOUT_MS)
+    const r = await fetch('/api/unpair', { method: 'POST', cache: 'no-store', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}', signal })
+    if (!r.ok) return { revoked: false, reason: `the bridge refused to revoke it: ${await reasonOf(r)}` }
+    const body = (await r.json().catch((err: unknown) => ({ error: `unreadable reply: ${String(err)}` }))) as { revoked?: unknown; reason?: unknown; error?: unknown }
+    if (body.revoked === true) return { revoked: true }
+    return { revoked: false, reason: typeof body.reason === 'string' && body.reason ? body.reason : typeof body.error === 'string' ? body.error : 'the bridge did not say it revoked it' }
+  } catch (err) {
+    if (err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')) return { revoked: false, reason: `no answer from the bridge in ${UNPAIR_TIMEOUT_MS / 1000} s` }
+    return { revoked: false, reason: `bridge unreachable: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
 function takeFromFragment(): void {
   const m = /[#&]pair=([0-9a-f]{32,})/i.exec(location.hash)
   if (!m) return

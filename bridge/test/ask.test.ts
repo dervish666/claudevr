@@ -34,7 +34,7 @@ test('character change: the name he is talking to does not swallow the next word
   assert.equal(addressedTo(tokens('Atlas be Juniper'), CHARS[0]!), 1)
   assert.equal(addressedTo(tokens('at las, be Juniper'), CHARS[0]!), 2)
   for (const t of ['Atlas, be Juniper.', 'Atlas be Juniper', 'Atlus, be Jupiter.', 'at las, become juniper', 'Atlas, switch to Juniper']) {
-    assert.deepEqual(as(t), { kind: 'character', character: 'juniper', changed: true, say: 'Character: juniper.' }, t)
+    assert.deepEqual(as(t), { kind: 'character', character: 'juniper', changed: true, say: 'Character: Juniper.' }, t)
   }
 })
 
@@ -73,9 +73,9 @@ test('short character names: the name itself still works, alone, first, after "b
   assert.equal(said('r e x, status', 'rex').kind, 'status', 'a multi-word heard-as matches as an exact phrase')
   assert.deepEqual(said('rex', 'rex'), { kind: 'ask', character: 'rex', question: '', say: 'Listening.' })
   assert.deepEqual(said('Rex.', 'rex'), { kind: 'ask', character: 'rex', question: '', say: 'Listening.' }, 'punctuation and case aside')
-  assert.deepEqual(said('be rex', 'ada'), { kind: 'character', character: 'rex', changed: true, say: 'Character: rex.' })
-  assert.deepEqual(said('be bo', 'bo'), { kind: 'character', character: 'bo', changed: false, say: 'Already bo.' })
-  assert.deepEqual(said('rex', 'ada'), { kind: 'character', character: 'rex', changed: true, say: 'Character: rex.' })
+  assert.deepEqual(said('be rex', 'ada'), { kind: 'character', character: 'rex', changed: true, say: 'Character: Rex.' })
+  assert.deepEqual(said('be bo', 'bo'), { kind: 'character', character: 'bo', changed: false, say: 'Already Bo.' })
+  assert.deepEqual(said('rex', 'ada'), { kind: 'character', character: 'rex', changed: true, say: 'Character: Rex.' })
   // Longer names keep the fuzzy match.
-  assert.deepEqual(said('Atlus, be Jupiter.', 'atlas'), { kind: 'character', character: 'juniper', changed: true, say: 'Character: juniper.' })
+  assert.deepEqual(said('Atlus, be Jupiter.', 'atlas'), { kind: 'character', character: 'juniper', changed: true, say: 'Character: Juniper.' })
 })

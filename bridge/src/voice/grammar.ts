@@ -12,14 +12,16 @@
 //   switch to X                    "switch to X", "go to X", "show X", or just "X"
 //   read X                         "read X", "what did X say", "what's X doing"
 //   tell X <message>               "tell X to ...", "ask X ...", "message X ..."
-//   confirm / cancel               only while a card is armed ("send", "yes" / "cancel", "no")
+//   confirm / cancel               only while a card is armed ("send", "yes" / "cancel", "no");
+//                                  while armed, anything that is no command cancels too ("wait")
 //   dispatcher                     "dispatcher", "back to the dispatcher": drop the selection
 //   voice X                        "voice X", "change voice to X", "use the X voice"; "voices" lists them
 //   <character>, ...               the current character's name first: a command still runs,
 //                                  anything else is a question for the character, sent to no session
 //   character X                    "be X", "character X", "X mode"; "operator mode" drops it; "characters" lists them
 //   anything else, 3+ words        a message for the dispatcher, if the fleet has one
-//   anything else, reader open     a message for the session being read, never the dispatcher
+//   anything else, reader open     a message for the session being read, never the dispatcher;
+//                                  if that session has left the fleet, nothing
 //
 // Callsigns match fuzzily (spelling and sound), because transcription
 // mangles names. A weak best match, or two near-equal ones, asks which.
@@ -33,9 +35,16 @@ export const TIE_MARGIN = 0.08
 const PLAUSIBLE = 0.6
 
 const DIGITS: Record<string, string> = { '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine', '10': 'ten' }
-const FILLERS = new Set(['um', 'uh', 'er', 'erm', 'hmm', 'hey', 'so', 'please', 'right', 'okay', 'ok', 'oh'])
+/** Dropped before parsing, so a callsign may not start with one either (callsign.ts). */
+export const FILLERS: ReadonlySet<string> = new Set(['um', 'uh', 'er', 'erm', 'hmm', 'hey', 'so', 'please', 'right', 'okay', 'ok', 'oh'])
 const CONFIRM = new Set(['send', 'send it', 'send that', 'send this', 'yes', 'yes send', 'yes send it', 'yeah', 'yep', 'confirm', 'confirmed', 'go', 'go ahead', 'do it'])
 const CANCEL = new Set(['cancel', 'cancel it', 'cancel that', 'no', 'nope', 'stop', 'abort', 'never mind', 'nevermind', 'scrap that', 'scrap it', "don't send", 'do not send', 'dont send', 'forget it', 'belay', 'belay that', 'belay it'])
+/**
+ * The first word of every confirm and cancel phrase. A callsign that starts
+ * with one would answer an armed card instead of naming a session, so the
+ * config refuses such an override (config.ts).
+ */
+export const CONFIRM_CANCEL_WORDS: ReadonlySet<string> = new Set([...CONFIRM, ...CANCEL].map(p => p.split(' ')[0]!))
 /** The words before a callsign that mean `tell`. */
 const TELL = new Set(['tell', 'ask', 'message'])
 /** Shorter than this, and not a command, is noise rather than a message for the dispatcher. */
@@ -271,6 +280,14 @@ export function limitsAnswer(fleet: Fleet, now: number): { say: string; lines: s
   return { say: clip(lines.join(' '), 500), lines }
 }
 
+/** A character's name as the HUD shows it beside its banner and buttons: "bosun" reads "Bosun". */
+const shown = (name: string) => name.charAt(0).toUpperCase() + name.slice(1)
+
+/** The answer to switching character: `name` is the pack name, `cur` the one in use (null in operator mode). */
+export function characterSwitch(name: string, cur: string | null): Extract<Interpretation, { kind: 'character' }> {
+  return { kind: 'character', character: name, changed: name !== cur, say: name === cur ? `Already ${shown(name)}.` : `Character: ${shown(name)}.` }
+}
+
 /** "dispatcher", "the dispatcher", "back to the dispatcher", "go back to dispatcher". */
 const DISPATCHER = /^(?:(?:go |switch |come )?back to )?(?:the )?dispatcher$/
 
@@ -363,7 +380,7 @@ export function characterCommand(text: string, input: Pick<InterpretInput, 'char
     chars.map(c => ({ sessionId: c.name, callsign: c.name, heardAs: [...c.heardAs] })),
     characterScore,
   )
-  if (r.ok) return { kind: 'character', character: r.target.callsign, changed: r.target.callsign !== cur, say: r.target.callsign === cur ? `Already ${r.target.callsign}.` : `Character: ${r.target.callsign}.` }
+  if (r.ok) return characterSwitch(r.target.callsign, cur)
   if (!explicit || heard.split(' ').length > 3) return null
   if (!names.length) return { kind: 'character', character: cur, changed: false, say: none }
   return { kind: 'character', character: cur, changed: false, say: r.why === 'ambiguous' ? `Which character: ${r.candidates.map(c => c.callsign).join(', or ')}?` : `No character called ${heard}. There is ${names.join(', ')}.` }
@@ -475,7 +492,15 @@ export function interpret(input: InterpretInput): Interpretation {
     if (v) return v
   }
 
-  if (!fleet) return { kind: 'unknown', say: 'No fleet data yet, so I cannot act on that.' }
+  // While a card is armed, speech that is no command stops it. "Wait", "hold
+  // on" and "no no no" mean "do not send that"; answered as "not a command"
+  // or taken as a new message, they let the countdown run out and the card
+  // go. Commands still run, the confirm words still confirm, and a classifier
+  // never sees this answer, since it classifies only unknown and which.
+  const armed = input.context === 'confirm'
+  const stopIt: Interpretation = { kind: 'cancel', say: 'Cancelled. Nothing sent.' }
+
+  if (!fleet) return armed ? stopIt : { kind: 'unknown', say: 'No fleet data yet, so I cannot act on that.' }
 
   if (/^(?:(?:what's|whats|what is|give me|read)(?: the| me the)? )?(?:fleet )?status(?: report| update)?(?: (?:of|on|for) (?:the |my )?(?:fleet|agents|sessions|team|everyone|everything))?$/.test(text) || /^how(?:'s| is| are) (?:everyone|everybody|the fleet|things)(?: doing)?$/.test(text)) {
     const a = statusAnswer(fleet)
@@ -543,6 +568,14 @@ export function interpret(input: InterpretInput): Interpretation {
     const r = resolve(text, targets)
     if (r.ok && r.score >= 0.85) return { kind: 'switch', sessionId: r.target.sessionId, callsign: r.target.callsign, say: `${r.target.callsign}.` }
   }
+
+  // Everything below is a fallback: words that named no session and gave no
+  // command. With a card armed they are him stopping it.
+  if (armed) return stopIt
+
+  // The reader had a session open that has since left the fleet. The words
+  // were meant for it, so they go nowhere rather than to the dispatcher.
+  if (input.focusId && !focus) return { kind: 'unknown', say: 'The session you had open has gone. Nothing was armed; say who it is for, or say dispatcher.' }
 
   // With a session open in the reader, anything else is for that session,
   // however short, and never rerouted through the dispatcher.

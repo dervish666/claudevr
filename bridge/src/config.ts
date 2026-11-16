@@ -6,7 +6,8 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import type { CallsignOverride } from './backend/callsign.ts'
+import { COMMAND_WORDS, type CallsignOverride } from './backend/callsign.ts'
+import { FILLERS, normalise } from './voice/grammar.ts'
 import type { Character } from './persona/prompt.ts'
 import { PACK_NAME } from '../../shared/theme.ts'
 
@@ -118,9 +119,10 @@ export interface Config {
 type Env = Record<string, string | undefined>
 
 const expandHome = (p: string) => (p === '~' ? homedir() : p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)
+/** Absolute and normalised: "/x/client/dist/" and "/x/a/../client/dist" both give "/x/client/dist", which the static file check relies on. */
 const absolute = (p: string, base: string) => {
   const e = expandHome(p)
-  return isAbsolute(e) ? e : resolve(base, e)
+  return isAbsolute(e) ? resolve(e) : resolve(base, e)
 }
 
 function readLocal(path: string, log: (...a: unknown[]) => void): Record<string, unknown> {
@@ -154,6 +156,17 @@ function int(v: unknown, fallback: number, name: string): number {
   return n
 }
 
+/**
+ * Every poll pushes to the open HUDs, and a HUD drops a socket that has heard
+ * nothing for 15 s (client/src/hud/link.ts). Past 10 s a quiet fleet would
+ * make every HUD reconnect over and over.
+ */
+export const MAX_POLL_MS = 10_000
+function pollMs(n: number): number {
+  if (n > MAX_POLL_MS) throw new Error(`dashweb.pollMs: at most ${MAX_POLL_MS} ms, got ${n}; every poll is what keeps the HUD's link alive, and a HUD drops a link that is silent for 15 s`)
+  return n
+}
+
 function bool(v: unknown, fallback: boolean, name: string): boolean {
   if (v === undefined || v === '') return fallback
   if (v === true || v === 'true' || v === '1') return true
@@ -162,6 +175,22 @@ function bool(v: unknown, fallback: boolean, name: string): boolean {
 }
 
 const obj = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+
+/**
+ * The first word of a name as the grammar will hear it, if that is a command,
+ * a confirm or a cancel: "Send" or "Yep" would confirm an armed card, "Status
+ * Board" would answer status. The grammar drops fillers first, so "Please
+ * Status" is heard as "status" (refused) and "Hey Jose" as "jose" (fine); a
+ * name of fillers alone could never be heard. Derived callsigns already step
+ * round these words (callsign.ts); an override is taken as written, so it is
+ * checked here.
+ */
+function commandWordIn(name: string): string | null {
+  const words = normalise(name).split(' ').filter(Boolean)
+  const first = words.find(w => !FILLERS.has(w))
+  if (first === undefined) return words[0] ?? name
+  return COMMAND_WORDS.has(first) ? first : null
+}
 
 /**
  * "callsigns": { "claudevr": "Claude" } or
@@ -175,7 +204,13 @@ export function parseCallsigns(v: unknown): CallsignOverride[] {
     const o = typeof val === 'string' ? { callsign: val } : obj(val)
     const callsign = typeof o.callsign === 'string' ? o.callsign.trim() : ''
     if (!/^[A-Za-z][A-Za-z ]{0,30}$/.test(callsign)) throw new Error(`callsigns.${match}: a callsign is one to a few plain words, got ${JSON.stringify(o.callsign)}`)
+    const word = commandWordIn(callsign)
+    if (word) throw new Error(`callsigns.${match}: the callsign ${JSON.stringify(callsign)} starts with "${word}", which the voice grammar hears as a command; pick a name that does not`)
     const heardAs = list(o.heardAs)
+    for (const h of heardAs) {
+      const w = commandWordIn(h)
+      if (w) throw new Error(`callsigns.${match}.heardAs: ${JSON.stringify(h)} starts with "${w}", which the voice grammar hears as a command; leave it out`)
+    }
     return { match, callsign, heardAs }
   })
 }
@@ -268,7 +303,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
       url: String(url).replace(/\/+$/, ''),
       t3Bin: absolute(String(t3Bin), REPO_ROOT),
       t3BaseDir: absolute(String(t3BaseDir), REPO_ROOT),
-      pollMs: int(env.CLAUDEVR_DASHWEB_POLL_MS ?? fileDash.pollMs, 2000, 'dashweb.pollMs'),
+      pollMs: pollMs(int(env.CLAUDEVR_DASHWEB_POLL_MS ?? fileDash.pollMs, 2000, 'dashweb.pollMs')),
       hideCwds: [join(stateDir, 'frontman')],
       t3Delivery: oneOf(env.CLAUDEVR_T3_DELIVERY ?? obj(file.t3).delivery, ['auto', 'queue'] as const, 'auto', 't3.delivery'),
       t3LinkFile: join(stateDir, 't3-link.json'),

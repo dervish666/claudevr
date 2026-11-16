@@ -13,7 +13,7 @@ import { Text } from './ui.tsx'
 import type { AgentInfo, AgentState, Session } from '../../../shared/protocol.ts'
 import { shownAgents } from '../../../shared/agents.ts'
 import { placed } from './Core.tsx'
-import { CORE_Y, LANE_GAP, SUB_GAP, SUB_H, SUB_MORE_H, SUB_W, TILE_H, TILE_W, planSubBoxes, slotPose } from './layout.ts'
+import { CORE_Y, LANE_GAP, SUB_GAP, SUB_H, SUB_LINE_CHARS, SUB_MORE_H, SUB_TYPE_CHARS, SUB_W, TILE_H, TILE_W, planSubBoxes, slotPose } from './layout.ts'
 import { useLines } from './linework.tsx'
 import { addFrame } from './shapes.tsx'
 import { MESH_WIDTH_M, RADIUS, STREAM_HEIGHT_M } from './Stream.tsx'
@@ -58,10 +58,12 @@ function subView(a: AgentInfo, sessionId: string, selected: string | null): SubV
   return {
     id: a.id,
     sessionId,
-    type: clipTo(a.type.toUpperCase(), 12),
-    description: clipTo(a.description, 22),
+    // Cut so the mark beside it stays in the box ("GENERAL…"); at 12 characters "RUNNING" was pushed off its right edge.
+    type: clipTo(a.type.toUpperCase(), SUB_TYPE_CHARS),
+    // Cut to what a 14 px line holds, so it is never clipped mid-letter by the box's edge.
+    description: clipTo(a.description, SUB_LINE_CHARS),
     state: a.state,
-    now: a.state === 'running' && a.now ? clipTo(a.now, 22) : '',
+    now: a.state === 'running' && a.now ? clipTo(a.now, SUB_LINE_CHARS) : '',
     dim: a.state !== 'running',
     selected: a.id === selected,
   }
@@ -91,8 +93,8 @@ const SubBox = memo(function SubBox({ v, top, left, plate, onPick }: { v: SubVie
       width={SUB_W_PX}
       height={SUB_H_PX}
       flexDirection="column"
-      paddingX={8}
-      paddingY={5}
+      paddingX={6}
+      paddingY={4}
       borderRadius={corner(3)}
       backgroundColor={v.selected ? plateOf('tileSel', plate) : plateOf('tile', v.dim ? plate * 0.7 : plate)}
       hover={{ backgroundColor: plateOf('hover', Math.max(plate, 0.92)) }}
@@ -101,22 +103,23 @@ const SubBox = memo(function SubBox({ v, top, left, plate, onPick }: { v: SubVie
         onPick.current(v.sessionId, v.id)
       }}
     >
-      <Container flexDirection="row" justifyContent="space-between" alignItems="center" gap={6} height={17} flexShrink={0}>
+      {/* Sized to be read at 1.25 m and more: nothing under 14 px (about 0.64 degrees there). Three rows fill the box's 52 px. */}
+      <Container flexDirection="row" justifyContent="space-between" alignItems="center" gap={6} height={18} flexShrink={0}>
         <Text fontFamily="rajdhani" fontWeight="bold" fontSize={15} color={v.dim ? C.muted : C.white} wordBreak="keep-all" flexShrink={1}>
           {fit(v.type, 'rajdhani-700')}
         </Text>
-        <Text fontFamily="rajdhani" fontWeight="bold" fontSize={13} color={stateTint(v.state)} flexShrink={0}>
+        <Text fontFamily="rajdhani" fontWeight="bold" fontSize={14} color={stateTint(v.state)} flexShrink={0}>
           {MARK[v.state]}
         </Text>
       </Container>
-      <Container height={16} overflow="hidden" flexShrink={0}>
-        <Text fontFamily="inter" fontSize={12} color={text} wordBreak="keep-all">
+      <Container height={17} overflow="hidden" flexShrink={0}>
+        <Text fontFamily="inter" fontSize={14} color={text} wordBreak="keep-all">
           {fit(v.description)}
         </Text>
       </Container>
       {/* Always in the tree, hidden when finished: a child coming and going inside a live root leaves ghost text. */}
-      <Container height={16} overflow="hidden" flexShrink={0} display={v.now ? 'flex' : 'none'}>
-        <Text fontFamily="inter" fontSize={12} color={C.cyan} wordBreak="keep-all">
+      <Container height={17} overflow="hidden" flexShrink={0} display={v.now ? 'flex' : 'none'}>
+        <Text fontFamily="inter" fontSize={14} color={C.cyan} wordBreak="keep-all">
           {fit(v.now || ' ')}
         </Text>
       </Container>

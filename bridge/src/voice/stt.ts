@@ -68,6 +68,8 @@ export interface HelperOptions {
   timeoutMs?: number
   /** How many clips may wait behind the one being transcribed. */
   maxQueue?: number
+  /** Longest wait for the model to load; past it the helper is assumed stuck and restarted. */
+  loadTimeoutMs?: number
   log?: (...a: unknown[]) => void
   /** For tests: what to run instead of python. */
   spawnHelper?: (python: string, args: string[]) => ChildProcess
@@ -94,12 +96,13 @@ export class HelperStt implements SttProvider {
   private nextId = 1
   private failures = 0
   private restartTimer: NodeJS.Timeout | null = null
+  private loadTimer: NodeJS.Timeout | null = null
   private closed = false
   private stderrTail: string[] = []
   private loadError: string | null = null
 
   constructor(o: HelperOptions) {
-    this.o = { timeoutMs: 20_000, maxQueue: 2, log: (...a) => console.log('[stt]', ...a), ...o }
+    this.o = { timeoutMs: 20_000, maxQueue: 2, loadTimeoutMs: 180_000, log: (...a) => console.log('[stt]', ...a), ...o }
     this.name = o.engine
     this.st = { provider: o.engine, state: 'loading', error: null, model: o.model, loadMs: null }
     this.start()
@@ -136,6 +139,18 @@ export class HelperStt implements SttProvider {
     this.child = child
     this.stderrTail = []
     const started = Date.now()
+    // A helper that never says ready (a hung import, a download that stalls)
+    // would leave the state at loading for good, with nothing restarting it.
+    // Past the deadline it is killed, and the exit takes the usual backoff.
+    this.clearLoadTimer()
+    this.loadTimer = setTimeout(() => {
+      this.loadTimer = null
+      if (this.child !== child) return
+      this.loadError = `the ${this.o.engine} model did not load in ${Math.round(this.o.loadTimeoutMs / 1000)} s`
+      this.o.log(`${this.loadError}; killing the helper`)
+      this.set({ state: 'unavailable', error: this.loadError })
+      child.kill('SIGKILL')
+    }, this.o.loadTimeoutMs)
 
     createInterface({ input: child.stdout! }).on('line', line => this.onLine(line, started))
     createInterface({ input: child.stderr! }).on('line', line => {
@@ -159,6 +174,7 @@ export class HelperStt implements SttProvider {
       return
     }
     if (m.ready === true) {
+      this.clearLoadTimer()
       this.failures = 0
       this.set({ state: 'ready', error: null, loadMs: m.loadMs ?? Date.now() - started })
       this.o.log(`${this.o.engine} ready in ${this.st.loadMs} ms`)
@@ -166,6 +182,7 @@ export class HelperStt implements SttProvider {
       return
     }
     if (m.ready === false) {
+      this.clearLoadTimer()
       this.loadError = `the ${this.o.engine} model failed to load: ${m.error ?? 'no reason given'}`
       this.set({ state: 'unavailable', error: this.loadError })
       return
@@ -185,6 +202,7 @@ export class HelperStt implements SttProvider {
   private onExit(child: ChildProcess, why: string): void {
     if (this.child !== child) return
     this.child = null
+    this.clearLoadTimer()
     const err = new SttUnavailable(`${this.o.engine} ${why}`)
     if (this.current) {
       if (this.current.timer) clearTimeout(this.current.timer)
@@ -225,9 +243,15 @@ export class HelperStt implements SttProvider {
     child.stdin!.write(JSON.stringify({ id: job.id, pcm: job.pcm.toString('base64') }) + '\n')
   }
 
+  private clearLoadTimer(): void {
+    if (this.loadTimer) clearTimeout(this.loadTimer)
+    this.loadTimer = null
+  }
+
   close(): void {
     this.closed = true
     if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.clearLoadTimer()
     const c = this.child
     this.child = null
     if (c) {

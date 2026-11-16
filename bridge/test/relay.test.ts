@@ -254,6 +254,40 @@ test('relay: his own words coming back, or the old answer, are not taken for a n
   r.p.close()
 })
 
+test('relay: a dispatcher quick enough to answer before the baseline read is still relayed', async () => {
+  const r = rig()
+  r.lines.reply = () => 'Aye, done already.'
+  // By the time the transcript is read after the send, it holds his message and the answer to it.
+  r.turns.push({ role: 'you', text: 'Anything new?', clipped: false }, { role: 'session', text: REPLY, clipped: false })
+  assert.equal(r.p.noteSentToDispatcher('Anything new?', demo.sessions.find(s => s.id === D)!), true)
+  await wait(20)
+  // The board catches up a moment later.
+  r.change(D, { state: 'idle', messages: [...demo.sessions.find(s => s.id === D)!.messages, { at: Date.now(), text: REPLY }], lastLine: REPLY })
+  await until(() => r.said.length === 1)
+  assert.equal(r.said[0]!.text, 'Aye, done already.')
+  assert.match(r.lines.prompts[0]!, /Routed the parser fix to Quill/, 'the prompt carries the quick answer')
+  assert.deepEqual(r.p.conversation().entries.map(e => [e.who, e.text]), [['user', 'Anything new?'], ['dispatcher', REPLY], ['character', 'Aye, done already.']])
+  r.p.close()
+})
+
+test('relay: a transcript that lags the board is not taken for the answer; the answer is relayed once it shows', async () => {
+  const r = rig()
+  // The baseline read sees neither his message nor an answer: the old answer is the baseline.
+  assert.equal(r.p.noteSentToDispatcher('Anything new?', demo.sessions.find(s => s.id === D)!), true)
+  await wait(20)
+  // The board moves, the transcript still lags: its newest turn is the old answer, which is no answer.
+  r.change(D, { state: 'idle', messages: [...demo.sessions.find(s => s.id === D)!.messages, { at: Date.now(), text: 'still old' }] })
+  await wait(200)
+  assert.equal(r.said.length, 0)
+  assert.equal(r.lines.prompts.length, 0)
+  // The transcript catches up: his message, then the answer.
+  r.turns.push({ role: 'you', text: 'Anything new?', clipped: false })
+  r.answer(REPLY)
+  await until(() => r.said.length === 1)
+  assert.match(r.lines.prompts[0]!, /Routed the parser fix to Quill/)
+  r.p.close()
+})
+
 test('conversation: an ask joins it, and a new character or operator mode clears it', async () => {
   const r = rig()
   const seen: number[] = []

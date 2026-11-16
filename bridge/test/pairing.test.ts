@@ -58,6 +58,7 @@ interface Rig {
   state: string
   /** The pairing clock; tests move it. */
   clock: { t: number }
+  backend: FakeAdapter
 }
 
 let n = 0
@@ -94,7 +95,7 @@ async function start(o: { limits?: Partial<PairLimits>; autoPair?: boolean; lega
   })
   await new Promise<void>(ok => bridge.server.listen(0, LAN ? '0.0.0.0' : '127.0.0.1', ok))
   running.push({ bridge, backend })
-  return { port: (bridge.server.address() as AddressInfo).port, devices, pairing, logs, notes, state, clock }
+  return { port: (bridge.server.address() as AddressInfo).port, devices, pairing, logs, notes, state, clock, backend }
 }
 
 type Reply = { status: number; body: any; headers: Record<string, unknown> }
@@ -439,6 +440,65 @@ test('devices.json: mode 600, written whole, holds hashes and never a token, and
   assert.deepEqual(again.match(token), { kind: 'device', id })
   assert.equal(again.match(`${token}x`), null)
   assert.equal(again.legacyActive(), false, 'no legacy token unless one was there before')
+})
+
+test('unpair: a device revokes its own token, and its open WebSocket closes; the legacy token revokes nothing', async () => {
+  const r = await start()
+  const keep = await pairDevice(r, MAC_UA)
+  const gone = await pairDevice(r)
+  const ws = await wsOpen(r.port, gone.token)
+  assert.ok('ws' in ws, JSON.stringify(ws))
+  const shut = closed(ws.ws)
+  const res = await call(r.port, 'POST', '/api/unpair', { token: gone.token })
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.body, { revoked: true })
+  assert.equal(await shut, REVOKED_CLOSE)
+  assert.equal((await call(r.port, 'GET', '/api/health', { token: gone.token })).status, 401)
+  assert.equal((await call(r.port, 'POST', '/api/unpair', { token: gone.token })).status, 401, 'once revoked, it is a stranger')
+  assert.deepEqual(r.devices.list().map(d => d.label), ['Chrome on Mac'], 'the other device is untouched')
+  assert.equal((await call(r.port, 'GET', '/api/health', { token: keep.token })).status, 200)
+  assert.ok(r.logs.includes(`pair: Quest browser (paired from 127.0.0.1) unpaired itself from 127.0.0.1`), r.logs.join('\n'))
+  // The legacy token is shared by every browser that has it: nothing is revoked from here.
+  const legacy = await call(r.port, 'POST', '/api/unpair', { token: LEGACY })
+  assert.equal(legacy.status, 200)
+  assert.deepEqual(legacy.body, { revoked: false, reason: `the legacy token is shared by every browser that has it; revoke it on the pairing page at https://localhost:${r.port}/pair` })
+  assert.equal(r.devices.legacyActive(), true)
+  assert.equal((await call(r.port, 'GET', '/api/health', { token: LEGACY })).status, 200)
+  // The usual gate: no token, or another origin.
+  assert.equal((await call(r.port, 'POST', '/api/unpair')).status, 401)
+  assert.equal((await call(r.port, 'POST', '/api/unpair', { token: keep.token, headers: { origin: 'https://evil.example' } })).status, 403)
+  assert.equal(r.devices.list().length, 1)
+})
+
+test('send: a device revoked while its request is arriving sends nothing, gets 401, and spends no send', async () => {
+  const r = await start()
+  const d = await pairDevice(r)
+  const body = Buffer.from(JSON.stringify({ sessionId: 'demo-harbour', text: 'run the tests' }))
+  const reply = new Promise<Reply>((ok, fail) => {
+    const req = request(
+      { host: '127.0.0.1', port: r.port, path: '/api/send', method: 'POST', rejectUnauthorized: false, headers: { authorization: `Bearer ${d.token}`, 'content-type': 'application/json', 'content-length': String(body.length) } },
+      res => {
+        let text = ''
+        res.on('data', c => (text += c))
+        res.on('end', () => ok({ status: res.statusCode ?? 0, body: JSON.parse(text), headers: res.headers }))
+      },
+    )
+    req.on('error', fail)
+    // Half the body: the gate has passed the token, and the route is waiting on the rest.
+    req.write(body.subarray(0, 10))
+    setTimeout(() => {
+      assert.ok(r.devices.revoke(d.id))
+      req.end(body.subarray(10))
+    }, 150)
+  })
+  const res = await reply
+  assert.equal(res.status, 401)
+  assert.equal(res.body.error, 'pairing token missing, wrong or revoked')
+  assert.deepEqual(r.backend.sent, [], 'nothing reached the backend')
+  assert.ok(r.logs.includes('send: 127.0.0.1: the token was revoked while the request arrived; refused, nothing sent'), r.logs.join('\n'))
+  // The bridge takes 3 sends a minute; the refused one took none of them.
+  for (let i = 0; i < 3; i++) assert.equal((await call(r.port, 'POST', '/api/send', { token: LEGACY, body: { sessionId: 'demo-harbour', text: `go ${i}` } })).status, 200, `send ${i}`)
+  assert.equal(r.backend.sent.length, 3)
 })
 
 test('logs: no code, token or poll secret appears in any line, across every test above', () => {
