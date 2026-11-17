@@ -43,6 +43,14 @@ export interface T3Config {
   t3LinkFile: string
 }
 
+/** The mod listener the claude backend is fed by (docs/mod-protocol.md). */
+export interface ModConfig {
+  /** Plain HTTP on 127.0.0.1; 0 for off. */
+  port: number
+  /** The discovery file the mods read: ~/.claudevr/bridge.json, or CLAUDEVR_BRIDGE_FILE. */
+  bridgeFile: string
+}
+
 export interface SttConfig {
   /** "parakeet" (parakeet-mlx, Apple silicon), "whisper" (faster-whisper) or "off". */
   provider: 'parakeet' | 'whisper' | 'off'
@@ -92,7 +100,7 @@ const STT_MODELS = { parakeet: 'mlx-community/parakeet-tdt-0.6b-v3', whisper: 's
 export const DEFAULT_STT: 'parakeet' | 'whisper' = process.platform === 'darwin' && process.arch === 'arm64' ? 'parakeet' : 'whisper'
 
 export interface Config {
-  backend: 'fake' | 'dashweb' | 't3'
+  backend: 'fake' | 'dashweb' | 't3' | 'claude'
   host: string
   port: number
   /** Client IPs allowed besides loopback. */
@@ -110,6 +118,7 @@ export interface Config {
   sendsPerHour: number
   dashweb: DashwebConfig | null
   t3: T3Config | null
+  mod: ModConfig
   stt: SttConfig
   tts: TtsConfig
   ffmpeg: string
@@ -172,6 +181,14 @@ function int(v: unknown, fallback: number, name: string): number {
 export const MAX_POLL_MS = 10_000
 function pollMs(n: number, name = 'dashweb.pollMs'): number {
   if (n > MAX_POLL_MS) throw new Error(`${name}: at most ${MAX_POLL_MS} ms, got ${n}; every poll is what keeps the HUD's link alive, and a HUD drops a link that is silent for 15 s`)
+  return n
+}
+
+/** A TCP port, or 0 for off. */
+function port(v: unknown, fallback: number, name: string): number {
+  if (v === undefined || v === '') return fallback
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error(`${name} must be a port number, or 0 for off, got ${JSON.stringify(v)}`)
   return n
 }
 
@@ -302,7 +319,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
   const fileDash = (typeof file.dashweb === 'object' && file.dashweb ? file.dashweb : {}) as Record<string, unknown>
 
   const backend = String(env.CLAUDEVR_BACKEND ?? file.backend ?? 'fake')
-  if (backend !== 'fake' && backend !== 'dashweb' && backend !== 't3') throw new Error(`backend must be "fake", "dashweb" or "t3", got "${backend}"`)
+  if (backend !== 'fake' && backend !== 'dashweb' && backend !== 't3' && backend !== 'claude') throw new Error(`backend must be "fake", "dashweb", "t3" or "claude", got "${backend}"`)
 
   let dashweb: DashwebConfig | null = null
   if (backend === 'dashweb') {
@@ -331,6 +348,12 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
       activeHours: int(env.CLAUDEVR_T3_ACTIVE_HOURS ?? fileT3.activeHours, 24, 't3.activeHours'),
       t3LinkFile: join(stateDir, 't3-link.json'),
     }
+  }
+
+  const fileMod = obj(file.mod)
+  const mod: ModConfig = {
+    port: port(env.CLAUDEVR_MOD_PORT ?? fileMod.port, 8444, 'mod.port'),
+    bridgeFile: absolute(env.CLAUDEVR_BRIDGE_FILE ?? '~/.claudevr/bridge.json', REPO_ROOT),
   }
 
   const fileStt = obj(file.stt)
@@ -387,6 +410,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     sendsPerHour: int(env.CLAUDEVR_SENDS_PER_HOUR ?? file.sendsPerHour, 60, 'sendsPerHour'),
     dashweb,
     t3,
+    mod,
     stt,
     tts,
     ffmpeg: String(env.CLAUDEVR_FFMPEG ?? file.ffmpeg ?? 'ffmpeg'),

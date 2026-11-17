@@ -1,0 +1,7 @@
+{
+  "name": "claudevr",
+  "version": "0.1.0",
+  "description": "Reports what this Claude Code session is doing to a ClaudeVR bridge on this machine, and submits the messages sent to it from the HUD",
+  "author": { "name": "dervish666" },
+  "types": "./types/index.d.ts"
+}

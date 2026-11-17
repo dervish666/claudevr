@@ -11,6 +11,9 @@
     "pollMs": 2000,
     "activeHours": 24
   },
+  "mod": {
+    "port": 8444
+  },
   "callsigns": {
     "my-project": {
       "callsign": "Atlas",

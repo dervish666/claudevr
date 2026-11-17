@@ -16,11 +16,13 @@ The screenshots use the demo fleet (`npm run demo`), not real sessions.
 
 ## Quickstart
 
-You need Node 22.18 or later, [T3 Code](https://t3.codes) running on this machine, and a headset (or any browser) on the same network.
+You need Node 22.18 or later, a headset (or any browser) on the same network, and one of two things on this machine for the sessions: [T3 Code](https://t3.codes), or plain Claude Code sessions with the ClaudeVR mod installed.
 
 1. `npm install`, then `npm run demo`. Open `https://localhost:8443/`, accept the certificate warning, and approve the code it shows at `https://localhost:8443/pair`. You get the HUD against a made-up fleet.
-2. `mkdir -p .local && cp config.example.json .local/config.json`, then trim it. It starts on the `t3` backend; put your headset's address in `allowIps`.
-3. `npm run t3-link`, and pick "Full access" on the page T3 opens. That link is how the bridge reads your threads and sends to them.
+2. `mkdir -p .local && cp config.example.json .local/config.json`, then trim it and put your headset's address in `allowIps`. It starts on the `t3` backend.
+3. Connect the sessions, one way or the other:
+   - **T3 Code**: run `npm run t3-link` and pick "Full access" on the page T3 opens. That link is how the bridge reads your threads and sends to them.
+   - **Claude Code**: set `"backend": "claude"` in the config, and in each Claude Code session run `/plugin install claudevr --marketplace dervish666/claudevr`. See [Claude Code backend](#claude-code-backend).
 4. `npm start`. On the headset, open `https://<this machine's LAN IP>:8443/`, accept the warning, and approve its code at `/pair` on this machine as before.
 5. Optional, for voice: `npm run stt:setup` (needs `uv` and `ffmpeg`; parakeet on Apple silicon, faster-whisper elsewhere).
 
@@ -51,7 +53,7 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 
 | Setting | Environment | Default |
 |---|---|---|
-| `backend` | `CLAUDEVR_BACKEND` | `fake`; or `t3` (T3 Code alone), `dashweb` |
+| `backend` | `CLAUDEVR_BACKEND` | `fake`; or `t3` (T3 Code alone), `claude` (Claude Code sessions running the mod), `dashweb` |
 | `port` | `CLAUDEVR_PORT` | `8443` |
 | `host` | `CLAUDEVR_HOST` | `0.0.0.0` |
 | `allowIps` | `CLAUDEVR_ALLOW_IPS` (comma list) | none: loopback only |
@@ -64,6 +66,8 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `t3.baseDir` | `CLAUDEVR_T3_BASE_DIR` | `~/.t3`, for the `t3` backend |
 | `t3.pollMs` | `CLAUDEVR_T3_POLL_MS` | 2000, at most 10000, for the same reason as `dashweb.pollMs` |
 | `t3.activeHours` | `CLAUDEVR_T3_ACTIVE_HOURS` | 24: a thread shows when it changed this recently, or is running or waiting now |
+| `mod.port` | `CLAUDEVR_MOD_PORT` | 8444, for the `claude` backend: plain HTTP on 127.0.0.1 where the mods report; 0 turns it off |
+| mod discovery file | `CLAUDEVR_BRIDGE_FILE` | `~/.claudevr/bridge.json` |
 | state directory | `CLAUDEVR_STATE_DIR` | `.local` |
 | config file | `CLAUDEVR_CONFIG` | `config.json` in the state directory |
 | `stt.cacheDir` | `CLAUDEVR_STT_CACHE` | `.local/models` for parakeet; the model's own cache for whisper |
@@ -101,6 +105,16 @@ Set `backend` to `t3` and the bridge needs nothing but T3 Code and the link from
 Each top-level thread is a session; a thread T3 marks as a sub-agent shows among its parent's agents, however deep it sits. Threads that are settled or snoozed stay off the HUD, and so does anything quiet for longer than `t3.activeHours`, unless it is running or waiting. A waiting thread reads as asking and goes in the needs-you queue, with its last line as the question; a failed one goes there too. T3 reports no spend, usage limits or context use, so the HUD shows those as unavailable. Interrupting, approving and answering a request are not supported yet.
 
 Without a usable link the fleet read fails and the HUD shows why, with the fix: run `npm run t3-link`. There is no CLI fallback on this backend.
+
+### Claude Code backend
+
+Set `backend` to `claude` and the sessions report themselves: no T3, no dashweb. Each Claude Code session runs the ClaudeVR mod, which you install from inside the session with `/plugin install claudevr --marketplace dervish666/claudevr`. The mod posts what its session is doing (state, current tool, last line, the question it is asking, its sub-agents, context use, usage limits, cost) within 2 s of a change and every 10 s regardless, and long-polls the bridge for messages. The full protocol is in [docs/mod-protocol.md](docs/mod-protocol.md).
+
+The bridge listens for the mods on `127.0.0.1:8444` (`mod.port`), plain HTTP, never on the network. On start it writes `~/.claudevr/bridge.json` with that address and a token made fresh for this run; the mods read it from there. The file is readable by you only, the token is never logged, and a clean stop removes the file unless another bridge has written its own since.
+
+A session the bridge has not heard from in 30 s leaves the fleet. One asking an AskUserQuestion reads as asking and goes in the needs-you queue with its options; a failed one goes there too. The usage strip takes the freshest reading of each window across the sessions, drops a window whose reset has passed, and marks the figures stale past 15 minutes. Today's spend adds up the latest `/cost` of every session seen today. Claude Code counts that at API rates, so on a subscription it measures use, not a bill.
+
+A send is queued for the session and handed to its mod's next poll, which is usually waiting already. The mod submits it as your next prompt (a busy session takes it as its next turn) and confirms. Confirmed reads "Delivered."; a mod that could not submit it gives a 502 with its reason. A message the mod collected but did not confirm within 30 s is a 504 with the outcome unknown, so check the session before sending again. One it never collected in that time is withdrawn and refused, and so is one waiting when its session ends. The reader's full turns come from the session's own `.jsonl` transcript, read only from under `~/.claude/projects/` and only its last 2 MiB. Answering a question from the HUD, approving and interrupting are not supported.
 
 ### Sending like a typed message
 

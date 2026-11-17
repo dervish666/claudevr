@@ -1,0 +1,14 @@
+{
+  "name": "claudevr",
+  "owner": {
+    "name": "dervish666"
+  },
+  "description": "The claudevr mod for Claude Code: links each session to a local ClaudeVR bridge",
+  "plugins": [
+    {
+      "name": "claudevr",
+      "source": "./mod/claudevr",
+      "description": "Reports what this Claude Code session is doing to a ClaudeVR bridge on this machine, and submits the messages sent to it from the HUD"
+    }
+  ]
+}

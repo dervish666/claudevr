@@ -9,6 +9,9 @@ import { createBridge } from './server.ts'
 import { DashwebAdapter } from './backend/dashweb/adapter.ts'
 import { FakeAdapter } from './backend/fake.ts'
 import { T3Adapter } from './backend/t3/adapter.ts'
+import { ClaudeAdapter } from './backend/claude/adapter.ts'
+import { ModHub } from './backend/claude/hub.ts'
+import { ModListener } from './mod-listener.ts'
 import type { SessionBackend } from './backend/types.ts'
 import { HelperStt, NoStt, type SttProvider } from './voice/stt.ts'
 import { FishTts, NoTts, SayTts, type TtsProvider } from './voice/tts.ts'
@@ -26,7 +29,25 @@ function main(): void {
   const pairing = new PairingRequests({ devices, log })
 
   let backend: SessionBackend
+  // The mod listener runs only for the claude backend: no other backend reads
+  // the reports, and a discovery file with nobody behind it would only lead
+  // mods to post into nothing.
+  let modListener: ModListener | null = null
   if (cfg.backend === 'dashweb' && cfg.dashweb) backend = new DashwebAdapter(cfg.dashweb)
+  else if (cfg.backend === 'claude') {
+    const hub = new ModHub({ log: (...a) => log('[claude]', ...a) })
+    if (cfg.mod.port === cfg.port) throw new Error(`mod.port and port are both ${cfg.port}; the mod listener needs a port of its own`)
+    if (cfg.mod.port) {
+      const listener = new ModListener({ hub, port: cfg.mod.port, bridgeFile: cfg.mod.bridgeFile, log: (...a) => log('[mod]', ...a) })
+      modListener = listener
+      listener.start().catch((err: Error) => log('[mod] could not start:', err.message))
+    }
+    backend = new ClaudeAdapter(hub, {
+      log: (...a) => log('[claude]', ...a),
+      listenerProblem: () => (modListener ? modListener.problem : 'the mod listener is off (mod.port is 0), so no Claude Code session can report'),
+    })
+    log(`claude backend: sessions report to the mod listener ${cfg.mod.port ? `on 127.0.0.1:${cfg.mod.port}` : '(off: mod.port is 0)'}`)
+  }
   else if (cfg.backend === 't3' && cfg.t3) {
     backend = new T3Adapter(cfg.t3, { log: (...a) => log('[t3]', ...a) })
     log(`t3 backend: ${cfg.t3.t3BaseDir}, threads changed in the last ${cfg.t3.activeHours} h, polled every ${cfg.t3.pollMs} ms`)
@@ -179,9 +200,10 @@ function main(): void {
   const stop = (sig: string) => {
     log(`${sig}: stopping`)
     backend.close()
+    const modClosed = modListener?.close() ?? Promise.resolve()
     stt.close()
     persona?.close()
-    bridge.close().then(
+    Promise.all([bridge.close(), modClosed]).then(
       () => process.exit(0),
       err => {
         log('error while stopping:', err)
