@@ -50,12 +50,14 @@ class StubStt implements SttProvider {
 class StubTts implements TtsProvider {
   readonly name = 'stub'
   said: string[] = []
+  /** What speak() hands back; a test that converts it swaps in real WebM. */
+  audio: Buffer = Buffer.from('OggS-not-really')
   status(): TtsStatus {
     return { provider: 'stub', ok: true, error: null }
   }
   async speak(text: string) {
     this.said.push(text)
-    return { audio: Buffer.from('OggS-not-really'), mime: 'audio/webm;codecs=opus' }
+    return { audio: this.audio, mime: 'audio/webm;codecs=opus' }
   }
 }
 
@@ -241,6 +243,46 @@ test('speak: returns audio from the provider, behind the token', async () => {
   assert.equal(tts.said.at(-1), 'Sent to Tally.')
   assert.equal((await call('POST', '/api/speak', { json: { text: 'x' }, token: null })).status, 401)
   assert.equal((await call('POST', '/api/speak', { json: { text: '' } })).status, 400)
+})
+
+test('speak: ?format=wav and ?format=mp3 convert the speech for clients that cannot play WebM; the default is untouched', { skip: !hasFfmpeg && 'no ffmpeg' }, async () => {
+  const was = tts.audio
+  tts.audio = tone
+  try {
+    const own = await call('POST', '/api/speak', { json: { text: 'Aye.' } })
+    assert.equal(own.type, 'audio/webm;codecs=opus')
+    assert.deepEqual(own.raw, tone, "no format: the provider's own bytes, as the HUD expects")
+
+    const wav = await call('POST', '/api/speak?format=wav', { json: { text: 'Aye.' } })
+    assert.equal(wav.status, 200)
+    assert.equal(wav.type, 'audio/wav')
+    assert.equal(wav.raw.subarray(0, 4).toString('latin1'), 'RIFF')
+    assert.equal(wav.raw.subarray(8, 12).toString('latin1'), 'WAVE')
+    // The header's data size is the real one (written to a file, not a pipe), so a strict reader takes it.
+    assert.equal(wav.raw.readUInt32LE(4), wav.raw.length - 8)
+    assert.equal(wav.raw.readUInt16LE(22), 1, 'mono')
+    // Back through the decoder: still about 1.5 s of tone.
+    const back = await decodeClip(wav.raw, { ffmpeg: 'ffmpeg', maxSeconds: 5 })
+    assert.ok(back.ms > 1300 && back.ms < 1700, `${back.ms} ms`)
+
+    const mp3 = await call('POST', '/api/speak?format=mp3', { json: { text: 'Aye.' } })
+    assert.equal(mp3.status, 200)
+    assert.equal(mp3.type, 'audio/mpeg')
+    const head = mp3.raw.subarray(0, 3).toString('latin1')
+    assert.ok(head === 'ID3' || (mp3.raw[0] === 0xff && (mp3.raw[1]! & 0xe0) === 0xe0), `not MP3: ${mp3.raw.subarray(0, 4).toString('hex')}`)
+    assert.ok((await decodeClip(mp3.raw, { ffmpeg: 'ffmpeg', maxSeconds: 5 })).ms > 1300)
+
+    assert.equal((await call('POST', '/api/speak?format=ogg', { json: { text: 'Aye.' } })).status, 400)
+    assert.equal((await call('POST', '/api/speak?format=wav', { json: { text: 'Aye.' }, token: null })).status, 401)
+  } finally {
+    tts.audio = was
+  }
+})
+
+test('speak: audio ffmpeg cannot read fails the conversion out loud, never a 200 with junk', { skip: !hasFfmpeg && 'no ffmpeg' }, async () => {
+  const r = await call('POST', '/api/speak?format=mp3', { json: { text: 'Aye.' } })
+  assert.equal(r.status, 502)
+  assert.match(r.body.error, /ffmpeg could not make mp3/)
 })
 
 test('build: hello carries the build id, and a rebuild is pushed to open HUDs', async () => {

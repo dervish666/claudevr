@@ -171,6 +171,8 @@ function render() {
     )
   }
 
+  const fp = data.ca ? data.ca.sha256 : 'This bridge has no CA (an older bridge, or a test).'
+  if ($('ca-fp').textContent !== fp) $('ca-fp').textContent = fp
   const legacyNow = JSON.stringify([data.legacy.active, armed])
   if (legacyNow === legacyShown) return
   legacyShown = legacyNow

@@ -23,7 +23,7 @@ const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a)
 
 function main(): void {
   const cfg = loadConfig(process.env, log)
-  const certs = ensureCert(join(cfg.stateDir, 'certs'), log)
+  const certs = ensureCert(join(cfg.stateDir, 'certs'), log, false, cfg.certNames)
   const legacyFile = join(cfg.stateDir, 'pairing-token')
   const devices = new DeviceStore({ file: join(cfg.stateDir, 'devices.json'), legacyFile, log })
   const pairing = new PairingRequests({ devices, log })
@@ -155,6 +155,7 @@ function main(): void {
     probeLog: join(cfg.stateDir, 'probe.log'),
     cert: readFileSync(certs.cert),
     key: readFileSync(certs.key),
+    caCert: readFileSync(certs.ca),
     sendsPerMinute: cfg.sendsPerMinute,
     sendsPerHour: cfg.sendsPerHour,
     log,
@@ -182,7 +183,7 @@ function main(): void {
       `ClaudeVR bridge on https://${cfg.host}:${cfg.port}  backend: ${backend.name}`,
       `  supports: ${Object.entries(backend.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ')}`,
       `  allowed clients: loopback${cfg.allowIps.length ? ', ' + cfg.allowIps.join(', ') : ' only (set allowIps or CLAUDEVR_ALLOW_IPS for the headset)'}`,
-      `  certificate covers: ${certs.names.join(', ')}`,
+      `  certificate covers: ${certs.names.join(', ')}; signed by the bridge CA, SHA-256 ${certs.caFingerprint}`,
       `  speech-to-text: ${cfg.stt.provider === 'off' ? 'off' : `${cfg.stt.provider} (${cfg.stt.model}), loading in the background`}   text-to-speech: ${tts.status().provider}`,
       ...(cfg.callsigns.length ? [`  callsign overrides: ${cfg.callsigns.map(c => `${c.match} -> ${c.callsign}`).join(', ')}`] : []),
       ...(cfg.dev ? ['  dev: open HUDs reload when the client is rebuilt'] : []),

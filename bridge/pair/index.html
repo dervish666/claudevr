@@ -60,6 +60,7 @@
       .revoke { min-height: 40px; padding: 0 16px; border-radius: 10px; border: 2px solid var(--line); background: var(--panel-2); cursor: pointer; }
       .revoke.armed { border-color: var(--bad); background: #3b0d0d; color: #ffe1e1; font-weight: 700; }
       .revoke:disabled { opacity: 0.6; cursor: default; }
+      .fp { font-family: ui-monospace, Menlo, monospace; font-size: 0.95rem; word-break: break-all; padding: 12px 14px; background: var(--panel); border-radius: 12px; }
       .legacy { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 14px; background: var(--panel); border-radius: 12px; }
       @media (max-width: 640px) {
         form { grid-template-columns: 1fr; }
@@ -97,6 +98,12 @@
           <tbody></tbody>
         </table>
         <p id="no-devices" class="muted" hidden>No devices paired with a code yet.</p>
+      </section>
+
+      <section aria-labelledby="ca-h">
+        <h2 id="ca-h">Bridge certificate</h2>
+        <p class="muted">An app that fetches the bridge's certificate while pairing shows a SHA-256 fingerprint. It must match this one. If it does not, something between the device and this machine swapped it: do not approve the code.</p>
+        <p id="ca-fp" class="fp">Loading…</p>
       </section>
 
       <section aria-labelledby="legacy-h">

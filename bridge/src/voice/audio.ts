@@ -3,7 +3,7 @@
 // reported as silence instead of reaching a model that invents words for it.
 
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SttFailure } from '../../../shared/protocol.ts'
@@ -108,3 +108,29 @@ export function levels(pcm: Buffer): { peakDb: number; rmsDb: number } {
  * from the mouth peaks far above it; room noise sits well below.
  */
 export const SILENCE_PEAK_DB = -40
+
+/** Speech formats /api/speak converts to on request, for clients that cannot play WebM/Opus (Godot). */
+export const SPEECH_FORMATS = { mp3: 'audio/mpeg', wav: 'audio/wav' } as const
+export type SpeechFormat = keyof typeof SPEECH_FORMATS
+
+/**
+ * Speech audio in another container, by ffmpeg: MP3 (libmp3lame, 64 kb/s) or
+ * 16-bit WAV, mono. Files, not pipes, so the WAV header carries real sizes.
+ */
+export async function transcode(audio: Buffer, format: SpeechFormat, o: { ffmpeg: string }): Promise<{ audio: Buffer; mime: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'claudevr-speech-'))
+  const input = join(dir, 'in')
+  const output = join(dir, `out.${format}`)
+  try {
+    await writeFile(input, audio, { mode: 0o600 })
+    const codec = format === 'mp3' ? ['-c:a', 'libmp3lame', '-b:a', '64k'] : ['-c:a', 'pcm_s16le']
+    const r = await runProgram(o.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-vn', '-ac', '1', ...codec, '-f', format, output], { timeoutMs: 20_000 })
+    if (r.code !== 0) {
+      const why = r.stderr.trim().split('\n').filter(Boolean).at(-1) ?? `ffmpeg exited with ${r.code}`
+      throw new Error(`ffmpeg could not make ${format}: ${why.replaceAll(dir, '<tmp>').slice(0, 200)}`)
+    }
+    return { audio: await readFile(output), mime: SPEECH_FORMATS[format] }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}

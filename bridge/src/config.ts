@@ -105,6 +105,8 @@ export interface Config {
   port: number
   /** Client IPs allowed besides loopback. */
   allowIps: string[]
+  /** Names the server certificate covers besides localhost, 127.0.0.1 and this machine's addresses (a .local hostname). */
+  certNames: string[]
   stateDir: string
   /** Theme packs, one folder each: <stateDir>/themes unless CLAUDEVR_THEMES_DIR names another (the repo's themes/ for a demo). */
   themesDir: string
@@ -400,6 +402,7 @@ export function loadConfig(env: Env = process.env, log: (...a: unknown[]) => voi
     host: env.CLAUDEVR_HOST ?? (file.host as string | undefined) ?? '0.0.0.0',
     port: int(env.CLAUDEVR_PORT ?? file.port, 8443, 'port'),
     allowIps: env.CLAUDEVR_ALLOW_IPS !== undefined ? list(env.CLAUDEVR_ALLOW_IPS) : list(file.allowIps),
+    certNames: env.CLAUDEVR_CERT_NAMES !== undefined ? list(env.CLAUDEVR_CERT_NAMES) : list(file.certNames),
     stateDir,
     themesDir: env.CLAUDEVR_THEMES_DIR ? absolute(env.CLAUDEVR_THEMES_DIR, REPO_ROOT) : join(stateDir, 'themes'),
     clientDir: absolute(env.CLAUDEVR_CLIENT_DIR ?? 'client/dist', REPO_ROOT),

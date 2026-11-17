@@ -40,7 +40,7 @@ npm run dev        # rebuild on change; open HUDs reload themselves
 npm run demo       # the same on the fake backend, no sessions needed
 npm test           # bridge tests
 npm run typecheck
-npm run cert       # make a new self-signed certificate now
+npm run cert       # make a new server certificate now (signed by the bridge CA)
 ```
 
 `stt:setup` needs `uv` and `ffmpeg`. It installs nothing globally: a virtualenv under `.local/` with `parakeet-mlx` (Apple silicon), and about 2.3 GB of weights. `node scripts/setup-stt.mjs whisper` adds faster-whisper instead, for machines without MLX.
@@ -49,7 +49,7 @@ On start the bridge prints the HUD and probe URLs for each address it has, how m
 
 ## Configuration
 
-Defaults, then `.local/config.json`, then environment variables. `config.example.json` shows the file. Everything under `.local/` stays out of git: certificate, key, paired devices (`devices.json`), the legacy pairing token, probe log, config.
+Defaults, then `.local/config.json`, then environment variables. `config.example.json` shows the file. Everything under `.local/` stays out of git: certificates and keys (`certs/`), paired devices (`devices.json`), the legacy pairing token, probe log, config.
 
 | Setting | Environment | Default |
 |---|---|---|
@@ -57,6 +57,7 @@ Defaults, then `.local/config.json`, then environment variables. `config.example
 | `port` | `CLAUDEVR_PORT` | `8443` |
 | `host` | `CLAUDEVR_HOST` | `0.0.0.0` |
 | `allowIps` | `CLAUDEVR_ALLOW_IPS` (comma list) | none: loopback only |
+| `certNames` | `CLAUDEVR_CERT_NAMES` (comma list) | none: the certificate covers localhost, 127.0.0.1 and this machine's IPv4 addresses; add names such as `studio.local` |
 | `sendsPerMinute`, `sendsPerHour` | `CLAUDEVR_SENDS_PER_MINUTE`, `CLAUDEVR_SENDS_PER_HOUR` | 6, 60 |
 | `dashweb.url` | `CLAUDEVR_DASHWEB_URL` | required for `dashweb` |
 | `dashweb.t3Bin` | `CLAUDEVR_T3_BIN` | required for `dashweb` |
@@ -299,6 +300,14 @@ A code is 6 characters from `ACDEFGHJKMNPQRTUVWXY34679` (no 0/O, 1/I/L, 2/Z, 5/S
 "Enter a token instead", under the code, is for recovery: it takes a token typed by hand. A link ending `#pair=<token>` pairs a page with no typing, for the legacy token only (32 or more hex characters); the fragment never reaches the server.
 
 "unpair" on the HUD takes two presses: the first turns it into "Unpair? Press again" for 4 s. The second sends `POST /api/unpair` (behind the gate, with the page's token), which revokes that device as Revoke on `/pair` would, then the page forgets the token and shows a new code, after 5 s at most if the bridge does not answer; it does not pair itself straight back. The legacy token is shared by every browser that has it, so the route leaves it working and says so, and the pairing screen reads "Unpaired here, but the bridge did not revoke the token, so it may still work: ..." with the reason. The second press cancels an armed card first ("Unpairing. Nothing sent."). A clip or typed words still with the bridge when the HUD goes are given up, their answers arm nothing, and a card still armed goes with the HUD, so no card can count down behind the pairing screen.
+
+### Certificates
+
+The bridge makes a local CA once (`.local/certs/ca.pem`, key `ca-key.pem`, mode 600, ten years) and uses it to sign the server certificate (`cert.pem`), which covers localhost, 127.0.0.1, this machine's IPv4 addresses and `certNames`. On start, when an address appears that the server certificate does not cover, or the certificate is not signed by the CA, only the server certificate is made again. The CA is never replaced on its own: half a CA or a file that is not a CA stops the bridge with a message. To start over, delete `ca.pem` and `ca-key.pem`; every app that pinned the old CA then has to pair again.
+
+A browser still sees a certificate it does not know and shows the warning; accept it once, and once more after each new server certificate (the bridge logs when it makes one). Pairing and the page's token are kept per origin, so the device stays paired. An app pins the CA instead: `GET /api/pair/ca` (no token, same gate as the rest of pairing) serves it, the app shows its SHA-256 fingerprint, and `/pair` shows the real one under "Bridge certificate" to compare before typing the code. `godot/` does this.
+
+`POST /api/speak?format=mp3` or `?format=wav` converts the speech with ffmpeg for clients that cannot play WebM/Opus; without `format` it is the provider's own, as the HUD expects.
 
 ### The legacy token
 

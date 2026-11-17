@@ -6,6 +6,7 @@
 //   GET  /pair        the approval page            this machine only: loopback address and a loopback Host
 //
 //   Pairing (pairing.ts), no token:
+//   GET  /api/pair/ca       the bridge CA's certificate (PEM), for a device to pin; compare its SHA-256 with /pair   address check + origin
 //   POST /api/pair/request  {} or { replaces } -> a code to show, an id and a poll secret   address check + origin
 //   GET  /api/pair/status?id=<id>  with x-pair-secret: pending, or the device's own token, once   address check + origin
 //   GET  /api/pair/devices  paired devices, the legacy token, codes waiting (never the codes)   this machine only + origin
@@ -21,7 +22,7 @@
 //   GET  /api/transcript?session=<id>  a session's last turns in full
 //   POST /api/transcribe   a recorded clip -> transcript and what it means
 //   POST /api/interpret    { text, context, focus } -> what it means (no audio)
-//   POST /api/speak   { text } -> WebM/Opus speech
+//   POST /api/speak   { text } -> WebM/Opus speech; ?format=mp3 or ?format=wav converts it (Godot plays neither WebM nor Opus)
 //   GET  /api/line?id=<id>  character mode: the spoken line for an answer, within the line timeout
 //   GET  /api/voice   speech-to-text and text-to-speech status
 //   GET  /api/conversation  character mode: the character's conversation (in memory only)
@@ -60,12 +61,13 @@ import { SendRefused, UnsupportedError, type SessionBackend } from './backend/ty
 import { relabelFleet, type CallsignOverride } from './backend/callsign.ts'
 import { SendLedger, type SendOutcome } from './send-ledger.ts'
 import { WsHub } from './ws-hub.ts'
-import { ClipError, decodeClip, levels, SILENCE_PEAK_DB } from './voice/audio.ts'
+import { ClipError, decodeClip, levels, SILENCE_PEAK_DB, SPEECH_FORMATS, transcode, type SpeechFormat } from './voice/audio.ts'
 import { characterSwitch, interpret } from './voice/grammar.ts'
 import { NoStt, SttBusy, SttUnavailable, type SttProvider } from './voice/stt.ts'
 import { NoTts, TtsUnavailable, type TtsProvider } from './voice/tts.ts'
 import type { Persona } from './persona/persona.ts'
 import type { ThemeStore } from './themes.ts'
+import { fingerprint } from './cert.ts'
 
 /** The bridge's own limits on work and traffic. Tests shrink them. */
 export interface Limits {
@@ -123,6 +125,8 @@ export interface BridgeOptions {
   instrumentLog?: string
   cert: string | Buffer
   key: string | Buffer
+  /** The CA that signed `cert`, served at /api/pair/ca for devices to pin. None: that route is a 404. */
+  caCert?: string | Buffer
   sendsPerMinute: number
   sendsPerHour: number
   log?: (...a: unknown[]) => void
@@ -339,6 +343,8 @@ export function createBridge(o: BridgeOptions): Bridge {
   let build: BuildInfo = { id: null, reload: !!o.devReload }
   const devices = o.devices ?? new DeviceStore({ file: null, legacyToken: o.token ?? null, log })
   const pairing = o.pairing ?? new PairingRequests({ devices, log })
+  const caPem = o.caCert ? String(o.caCert) : null
+  const caFingerprint = caPem ? fingerprint(caPem) : null
 
   const refuseIp = (ip: string) => {
     if (refusedIps.has(ip)) return
@@ -470,7 +476,7 @@ export function createBridge(o: BridgeOptions): Bridge {
       const m = await meaning(body.text, contextOf(body.context), focusOf(body.focus))
       return sendJson(res, 200, { interpretation: m.interpretation, ...(m.line ? { line: m.line } : {}) })
     }
-    if (path === '/api/speak' && req.method === 'POST') return speakRoute(req, res)
+    if (path === '/api/speak' && req.method === 'POST') return speakRoute(req, res, url.searchParams)
     if (path === '/api/line' && req.method === 'GET') return lineRoute(res, url.searchParams)
     if (path === '/api/conversation' && req.method === 'GET') return sendJson(res, 200, conversation())
     if (path === '/api/character' && req.method === 'POST') return characterRoute(req, res, ip)
@@ -552,6 +558,14 @@ export function createBridge(o: BridgeOptions): Bridge {
     const secret = typeof secretHeader === 'string' ? secretHeader : null
 
     // The device's side answers any allowed address, with no token.
+    // The CA is public, and fetching it over a connection nothing vouches for
+    // yet is trust on first use: the device shows the fingerprint it got and
+    // /pair shows the real one, so a person can compare them before approving.
+    if (path === '/api/pair/ca' && req.method === 'GET') {
+      if (!caPem) return sendJson(res, 404, { error: 'this bridge has no CA; pin its certificate file instead' })
+      res.writeHead(200, { 'content-type': 'application/x-pem-file', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+      return void res.end(caPem)
+    }
     if (path === '/api/pair/request' && req.method === 'POST') {
       const body = asObject(await readBody(req, PAIR_BODY_MAX))
       const replaces = typeof body.replaces === 'string' && secret ? { id: body.replaces, secret } : null
@@ -586,7 +600,7 @@ export function createBridge(o: BridgeOptions): Bridge {
     if (path === '/api/pair/devices' && req.method === 'GET') {
       // waiting() first, because it sweeps expired requests, which can unpair a device that never collected its token.
       const waiting = pairing.waiting()
-      return sendJson(res, 200, { devices: devices.list(), legacy: { active: devices.legacyActive() }, waiting })
+      return sendJson(res, 200, { devices: devices.list(), legacy: { active: devices.legacyActive() }, waiting, ca: caFingerprint ? { sha256: caFingerprint } : null })
     }
     if (path === '/api/pair/approve' && req.method === 'POST') {
       const body = asObject(await readBody(req, PAIR_BODY_MAX))
@@ -818,13 +832,20 @@ export function createBridge(o: BridgeOptions): Bridge {
     return sendJson(res, 200, await line)
   }
 
-  async function speakRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function speakRoute(req: IncomingMessage, res: ServerResponse, q: URLSearchParams): Promise<void> {
     const body = asObject(await readBody(req, JSON_MAX))
     if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > TEXT_MAX) return sendJson(res, 400, { error: `text: what to say, at most ${TEXT_MAX} characters` })
+    const format = q.get('format')
+    if (format !== null && !Object.hasOwn(SPEECH_FORMATS, format)) return sendJson(res, 400, { error: `format: ${Object.keys(SPEECH_FORMATS).join(' or ')}, or leave it out for the provider's own` })
     const text = body.text
     try {
       // Uncached speech runs say and ffmpeg, or a paid fish.audio request; only a few at once.
-      const sp = await pools.speech.run(() => tts.speak(text))
+      // A conversion runs in the same slot, so it is bounded the same way.
+      const sp = await pools.speech.run(async () => {
+        const own = await tts.speak(text)
+        if (format === null || own.mime.startsWith(SPEECH_FORMATS[format as SpeechFormat])) return own
+        return transcode(own.audio, format as SpeechFormat, { ffmpeg })
+      })
       res.writeHead(200, { 'content-type': sp.mime, 'content-length': String(sp.audio.length), 'cache-control': 'no-store' })
       res.end(sp.audio)
     } catch (err) {

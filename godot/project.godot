@@ -1,0 +1,24 @@
+; Engine configuration file.
+; ClaudeVR Godot probe: proves a Godot app can pair with the bridge and send it speech.
+
+config_version=5
+
+[application]
+
+config/name="ClaudeVR Probe"
+config/description="Desktop probe for addons/claudevr: pair, hold space to talk, print the bridge's transcript."
+run/main_scene="res://probe/probe.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+
+[audio]
+
+driver/enable_input=true
+
+[display]
+
+window/size/viewport_width=900
+window/size/viewport_height=420
+
+[rendering]
+
+renderer/rendering_method="mobile"
